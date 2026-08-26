@@ -3,11 +3,18 @@ library(tspredit)
 library(daltoolbox)
 library(daltoolboxdp)
 library(ggplot2)
+library(forecast)
 expand_dataset <- function(x) {
   url <- attr(x, "url")
   if (is.null(url) || !nzchar(url)) x else loadfulldata(x)
 }
 
+source("ts_fil_fft.R")
+source("ts_fil_remd.R")
+source("ts_fil_spline.R")
+source("ts_fil_gabor.R")
+
+#Inicialização das variaveis
 test_values_non_filter <- list()
 test_values_ma <- list()
 test_values_ema <- list()
@@ -23,6 +30,7 @@ test_values_remd <- list()
 test_values_hp <- list()
 test_values_kalman <- list()
 test_values_seasonal <- list()
+test_values_gabor <- list()
 
 yvalues_non_filter <- list()
 yvalues_ma <- list()
@@ -39,37 +47,38 @@ yvalues_remd <- list()
 yvalues_hp <- list()
 yvalues_kalman <- list()
 yvalues_seasonal <- list()
+yvalues_gabor <- list()
 
+#Importando o Banco de dados
 data(m4)
 m4 <- expand_dataset(m4)
 cat("Dataset: m4\n")
 cat("Frequency groups:", paste(names(m4), collapse = ", "), "\n")
-
 first_group <- names(m4)[1]
+
+#For para rodar o código nas 10 primeiras series temporais
 for (i in 1:10) {
   first_name <- names(m4[[first_group]])[i]
   first_series <- m4[[first_group]][[first_name]]
   
+  freq <- forecast::findfrequency(first_series)
+  
+  #Correção para algumas series temporais que tem os ultimos 260 valores vazios
   print(any(is.na(first_series)))
   print(sum(is.na(first_series)))
   length(first_series)
-  
-  ts.plot(first_series, ylab = "Value", xlab = "Index", main = paste("m4", first_group, first_name))
-  
-  
   first_series <- na.omit(first_series)
-  
   ts.plot(first_series, ylab = "Value", xlab = "Index", main = paste("m4", first_group, first_name))
-  
   print(any(is.na(first_series)))
   print(sum(is.na(first_series)))
   length(first_series)
+  
+  
   
   set_example_seed()
   
-  #Transformar essa aplicação de filtro para um for simples com if e guardar os resultados em vetores diferentes
-  
-  for (j in 1:14) {
+  #Escolha de qual filtro aplicar com um for simples
+  for (j in 1:16) {
     #Preciso definir o metodo de escolhas dos hiper parametros
     if(j == 1){
       ts_estructured <- ts_data(first_series,11)
@@ -127,7 +136,7 @@ for (i in 1:10) {
       y <- transform(filter, first_series)
       ts_estructured <- ts_data(y,11)
     }else if(j == 12){
-      filter <- ts_fil_remd()
+      filter <- ts_fil_remd(max_imfs = NULL)
       filter <- fit(filter, first_series)
       y <- transform(filter, first_series)
       ts_estructured <- ts_data(y,11)
@@ -141,18 +150,26 @@ for (i in 1:10) {
       filter <- fit(filter, first_series)
       y <- transform(filter, first_series)
       ts_estructured <- ts_data(y,11)
+    }else if(j == 15){
+      filter <- ts_fil_seas_adj(frequency = freq)
+      filter <- fit(filter, first_series)
+      y <- transform(filter, first_series)
+      ts_estructured <- ts_data(y,11)
     }else{
-      #Precisa resolver o problema de descobrir qual a frequencia da serie temporal
+      filter <- ts_fil_gabor(central_frequency = (1 / freq))
+      filter <- fit(filter, first_series)
+      y <- transform(filter, first_series)
+      ts_estructured <- ts_data(y,11)
     }
     
+    #Divisão do teste para 10 passos fixos
     #talvez ao inves de ser 10 passsos pensar em um modelo que calcule x ciclos
     samp <- ts_sample(ts_estructured, test_size = 10)
     io_train <- ts_projection(samp$train)
     io_test <- ts_projection(samp$test)
     
-    # MLP
+    # Aplicação do MLP
     preproc <- ts_norm_gminmax()
-    
     
     model <- ts_mlp(ts_norm_gminmax(), input_size=10, size=10, decay=0)
     model <- fit(model, x=io_train$input, y=io_train$output)
@@ -167,14 +184,16 @@ for (i in 1:10) {
     prediction <- as.vector(prediction)
     output <- as.vector(io_test$output)
     
-    
-    
     ev_test <- evaluate(model, output, prediction)
-    ev_test
-    
-    #guardando os valores finais para comparação se necessário(não esquecer de fazer um if para colocar na list do filtro certo)
     yvalues <- c(io_train$output, io_test$output)
     
+    p <- plot_ts_pred(y=yvalues, yadj=adjust, ypre=prediction, color_prediction="orange") + theme(text = element_text(size = 16))
+
+    filename <- sprintf("plot_series_%02d_filter_%02d.png", i, j)
+
+    ggsave(filename = filename, plot = p, width = 10, height = 6, dpi = 300)
+    
+    #Estrutura if-else para definir em que lugar guardar as informações da serie temporal
     if(j == 1){
       yvalues_non_filter <- append(yvalues_non_filter, list(yvalues))
       test_values_non_filter <- append(test_values_non_filter, list(ev_test$metrics))
@@ -217,13 +236,13 @@ for (i in 1:10) {
     }else if(j == 14){
       yvalues_kalman <- append(yvalues_kalman, list(yvalues))
       test_values_kalman <- append(test_values_kalman, list(ev_test$metrics))
-    }else{
+    }else if(j == 15){
       yvalues_seasonal <- append(yvalues_seasonal, list(yvalues))
       test_values_seasonal <- append(test_values_seasonal, list(ev_test$metrics))
+    }else{
+      yvalues_gabor <- append(yvalues_gabor, list(yvalues))
+      test_values_gabor <- append(test_values_gabor, list(ev_test$metrics))
     }
-    
-    
-    plot_ts_pred(y=yvalues, yadj=adjust, ypre=prediction, color_prediction="orange") + theme(text = element_text(size=16))
   }
   
 }
