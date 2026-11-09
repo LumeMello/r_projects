@@ -1,0 +1,24 @@
+Registered S3 method overwritten by 'quantmod':
+  method            from
+  as.zoo.data.frame zoo 
+Baixando M4 Hourly: https://raw.githubusercontent.com/M4competition/M4-methods/master/Dataset/Train/Hourly-train.csv
+
+=== WAVELET: desvio no ULTIMO ponto (filtrado - bruto) ===
+H25  x[1]=3682 | periodico:    313.0 (formula    313.0) | reflexao:  -12.0 (formula  -12.0) | len=670/670
+H28  x[1]=5250 | periodico:     88.0 (formula     88.0) | reflexao:  -48.8 (formula  -48.8) | len=670/670
+H30  x[1]=106613 | periodico:  -9709.5 (formula  -9709.5) | reflexao: -264.2 (formula -264.2) | len=670/670
+
+=== GABOR: guarda de ganho (esperado: freq 2,3,4,6,8 recusados; 12 e 24 ok) ===
+freq= 2  FILTER_FAILED  max|f|/max|x| = NA  Kernel Gabor amplifica o sinal (ganho L1 = 1280 > 3); use pe
+freq= 3  FILTER_FAILED  max|f|/max|x| = NA  Kernel Gabor amplifica o sinal (ganho L1 = 1110 > 3); use pe
+freq= 4  FILTER_FAILED  max|f|/max|x| = NA  Kernel Gabor amplifica o sinal (ganho L1 = 520 > 3); use per
+freq= 6  FILTER_FAILED  max|f|/max|x| = NA  Kernel Gabor amplifica o sinal (ganho L1 = 89.4 > 3); use pe
+freq= 8  FILTER_FAILED  max|f|/max|x| = NA  Kernel Gabor amplifica o sinal (ganho L1 = 9.63 > 3); use pe
+freq=12  OK             max|f|/max|x| = 1.09  
+freq=24  OK             max|f|/max|x| = 0.972  
+
+=== FREQ: piso aplicado (FREQ_MIN_VALID = 12 , fallback = 24 ) ===
+H48  freq_raw=1 -> usado=24
+H15  freq_raw=1 -> usado=24
+H19  freq_raw=3 -> usado=24
+H12  freq_raw=24 -> usado=24
