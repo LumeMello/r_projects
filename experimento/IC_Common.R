@@ -281,17 +281,21 @@ metric_bundle <- function(actual, predicted) {
 # ---------- Teste de Diebold-Mariano ----------
 # Os erros de teste sao N_WINDOWS janelas nao sobrepostas de PRED_HORIZON passos;
 # dentro de cada janela os erros dos horizontes 1..h sao correlacionados, por isso
-# h = PRED_HORIZON. Com o estimador padrao do forecast ("acf") a variancia de longo
-# prazo soma as autocovariancias dos lags 1..h-1 com peso 1 e pode ficar NEGATIVA
-# em amostras pequenas (30 pontos). Nesse caso o forecast emite o aviso
-# "Variance is negative ... Proceeding with horizon h=1" e devolve, sem marcar no
-# resultado, um teste com h=1 (que ignora a autocorrelacao). O estimador de
-# Bartlett (pesos 1 - j/h, tipo Newey-West) e sempre >= 0, entao o teste fica com
-# o h pedido em todas as linhas. Para reproduzir o comportamento antigo use "acf".
-DM_VARESTIMATOR <- "bartlett"
+# h = PRED_HORIZON. O estimador padrao do forecast ("acf", o do teste original/HLN)
+# soma as autocovariancias dos lags 1..h-1 com peso 1 e, com so 30 pontos, pode dar
+# variancia NEGATIVA. Nesse caso o forecast avisa "Variance is negative ... Proceeding
+# with horizon h=1" e devolve, sem marcar no resultado, um teste com h=1 (que ignora
+# a autocorrelacao). Aqui: usa "acf" e, SO quando a variancia e negativa, refaz com
+# "bartlett" (pesos 1 - j/h, sempre >= 0), mantendo h. Usar bartlett em todas as
+# linhas encolhe a variancia e torna o teste menos conservador (no ARIMA mudou a
+# conclusao de 52 de 3000 linhas), por isso fica so como fallback.
+DM_VARESTIMATOR <- "acf"
+DM_FALLBACK_VARESTIMATOR <- "bartlett"
 
-dm_test_safe <- function(e_base, e_model, h = PRED_HORIZON, varestimator = DM_VARESTIMATOR) {
-  out <- list(stat = NA_real_, p = NA_real_, h_used = NA_integer_, note = NA_character_)
+dm_test_safe <- function(e_base, e_model, h = PRED_HORIZON, varestimator = DM_VARESTIMATOR,
+                         fallback = DM_FALLBACK_VARESTIMATOR) {
+  out <- list(stat = NA_real_, p = NA_real_, h_used = NA_integer_,
+              varestimator = NA_character_, note = NA_character_)
   if (isTRUE(all.equal(e_base, e_model, tolerance = 1e-9))) {
     # Previsoes identicas ao baseline (ex.: LOESS em serie limpa, que nao
     # altera a serie): diferenca nula, sem evidencia de superioridade.
@@ -303,18 +307,29 @@ dm_test_safe <- function(e_base, e_model, h = PRED_HORIZON, varestimator = DM_VA
     out$note <- "ZERO_VARIANCE_LOSS_DIFF"
     return(out)
   }
-  warns <- character(0)
-  dm <- tryCatch(
-    withCallingHandlers(
-      forecast::dm.test(e_base, e_model, alternative = "greater", h = h, power = 2,
-                        varestimator = varestimator),
-      warning = function(w) { warns <<- c(warns, conditionMessage(w)); invokeRestart("muffleWarning") }),
-    error = function(e) { out$note <<- paste0("DM_ERROR: ", conditionMessage(e)); NULL })
-  if (is.null(dm)) return(out)
-  out$stat <- unname(as.numeric(dm$statistic))
-  out$p <- as.numeric(dm$p.value)
-  out$h_used <- as.integer(dm$parameter[["Forecast horizon"]])
-  if (length(warns)) out$note <- paste0("WARNING: ", paste(unique(warns), collapse = " | "))
+  run <- function(ve) {
+    warns <- character(0)
+    dm <- tryCatch(
+      withCallingHandlers(
+        forecast::dm.test(e_base, e_model, alternative = "greater", h = h, power = 2,
+                          varestimator = ve),
+        warning = function(w) { warns <<- c(warns, conditionMessage(w)); invokeRestart("muffleWarning") }),
+      error = function(e) structure(list(msg = conditionMessage(e)), class = "dm_error"))
+    list(dm = dm, warns = warns)
+  }
+  r <- run(varestimator); used <- varestimator; note <- NA_character_
+  negative <- any(grepl("Variance is negative", r$warns, fixed = TRUE))
+  if (negative && !is.null(fallback) && fallback != varestimator) {
+    r <- run(fallback); used <- fallback
+    note <- paste0("NEGATIVE_VARIANCE_", toupper(varestimator), "_USED_", toupper(fallback))
+  }
+  if (inherits(r$dm, "dm_error")) { out$note <- paste0("DM_ERROR: ", r$dm$msg); return(out) }
+  out$stat <- unname(as.numeric(r$dm$statistic))
+  out$p <- as.numeric(r$dm$p.value)
+  out$h_used <- as.integer(r$dm$parameter[["Forecast horizon"]])
+  out$varestimator <- used
+  if (length(r$warns)) note <- paste(c(na.omit(note), paste0("WARNING: ", unique(r$warns))), collapse = " | ")
+  out$note <- note
   out
 }
 
@@ -452,12 +467,12 @@ run_experiment <- function(model_name, grid, output_prefix, series_idx = NULL) {
           metrics <- metric_bundle(actual_all, pred_all)
           status <- "CONVERGED"
           if (filter_family == "non_filter") baseline_errors <- errors
-          dm_stat <- NA_real_; dm_p <- NA_real_; dm_h <- NA_integer_; dm_note <- NA_character_
+          dm_stat <- NA_real_; dm_p <- NA_real_; dm_h <- NA_integer_; dm_note <- NA_character_; dm_ve <- NA_character_
           if (filter_family == "non_filter") {
-            dm_stat <- 0; dm_p <- 1; dm_h <- PRED_HORIZON; dm_note <- "BASELINE"
+            dm_stat <- 0; dm_p <- 1; dm_h <- PRED_HORIZON; dm_note <- "BASELINE"; dm_ve <- DM_VARESTIMATOR
           } else if (!is.null(baseline_errors) && length(baseline_errors) == length(errors)) {
             dm <- dm_test_safe(baseline_errors, errors, h = PRED_HORIZON)
-            dm_stat <- dm$stat; dm_p <- dm$p; dm_h <- dm$h_used; dm_note <- dm$note
+            dm_stat <- dm$stat; dm_p <- dm$p; dm_h <- dm$h_used; dm_note <- dm$note; dm_ve <- dm$varestimator
           } else {
             dm_note <- "NO_BASELINE"
           }
@@ -470,7 +485,7 @@ run_experiment <- function(model_name, grid, output_prefix, series_idx = NULL) {
         } else {
           status <- "FAILED_ROLLING"
           metrics <- c(RMSE = NA_real_, MAE = NA_real_, MAPE = NA_real_, MAPE_n = 0)
-          dm_stat <- NA_real_; dm_p <- NA_real_; dm_h <- NA_integer_; dm_note <- NA_character_
+          dm_stat <- NA_real_; dm_p <- NA_real_; dm_h <- NA_integer_; dm_note <- NA_character_; dm_ve <- NA_character_
         }
         
         params_text <- paste(names(best_params), unlist(best_params), sep = "=", collapse = ";")
@@ -487,7 +502,7 @@ run_experiment <- function(model_name, grid, output_prefix, series_idx = NULL) {
           RMSE = unname(metrics["RMSE"]), MAE = unname(metrics["MAE"]),
           MAPE = unname(metrics["MAPE"]), MAPE_n = unname(metrics["MAPE_n"]),
           DM_Stat = dm_stat, DM_Pvalue = dm_p, DM_H_Used = dm_h,
-          DM_Varestimator = DM_VARESTIMATOR, DM_Note = dm_note,
+          DM_Varestimator = dm_ve, DM_Note = dm_note,
           Runtime_Seconds = as.numeric(difftime(Sys.time(), t0, units = "secs")),
           stringsAsFactors = FALSE
         )
