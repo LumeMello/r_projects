@@ -3,7 +3,7 @@
 # Os scripts de modelo devem ser executados a partir desta pasta.
 # =============================================================================
 
-PRED_HORIZON <- 3L
+PRED_HORIZON <- 5L
 INPUT_LEN <- 10L
 N_SERIES <- 50L
 N_WINDOWS <- 10L
@@ -141,9 +141,22 @@ corrupt_sensor_signal <- function(series, noise_lvl, outlier_ratio, spike_mag, s
   as.numeric(out)
 }
 
-load_m4_hourly <- function(n_series = N_SERIES) {
-  message("Baixando M4 Hourly: ", M4_HOURLY_URL)
-  dat <- utils::read.csv(M4_HOURLY_URL, stringsAsFactors = FALSE, check.names = FALSE)
+# Copia local do CSV: depois do primeiro download, retomar nao depende de internet.
+M4_CACHE_FILE <- "Hourly-train.csv"
+
+load_m4_hourly <- function(n_series = N_SERIES, cache_file = M4_CACHE_FILE) {
+  src <- M4_HOURLY_URL
+  if (!is.null(cache_file) && file.exists(cache_file)) {
+    message("Lendo M4 Hourly do arquivo local: ", cache_file)
+    src <- cache_file
+  } else if (!is.null(cache_file)) {
+    message("Baixando M4 Hourly: ", M4_HOURLY_URL)
+    tmp <- paste0(cache_file, ".part")
+    ok <- tryCatch(utils::download.file(M4_HOURLY_URL, tmp, mode = "wb", quiet = TRUE) == 0,
+                   error = function(e) FALSE)
+    if (ok && file.rename(tmp, cache_file)) src <- cache_file else unlink(tmp)
+  }
+  dat <- utils::read.csv(src, stringsAsFactors = FALSE, check.names = FALSE)
   n <- min(as.integer(n_series), nrow(dat))
   ids <- as.character(dat[[1]][seq_len(n)])
   values <- lapply(seq_len(n), function(i) {
@@ -389,15 +402,93 @@ select_validation <- function(model_name, candidates, grid, x_train, y_train, fr
   best
 }
 
+# ---------- Checkpoint ----------
+# Cada combinacao (serie, cenario, filtro) concluida e gravada em um .rds proprio em
+# checkpoints/<output_prefix>/. Se o processo parar (queda de energia, Ctrl+C, erro),
+# basta rodar o mesmo script de novo: o que ja esta salvo e pulado e o trabalho
+# continua do primeiro filtro que faltou. Cada arquivo guarda tambem o estado do
+# gerador aleatorio (.Random.seed) ao fim do filtro, para que a retomada produza
+# exatamente os mesmos numeros de uma execucao sem interrupcao (filtros como
+# remd/CEEMD usam numeros aleatorios sem semente propria).
+# Para recomecar do zero, apague a pasta do checkpoint ou use outro output_prefix.
+CHECKPOINT_ROOT <- "checkpoints"
+
+checkpoint_dir_for <- function(output_prefix) file.path(CHECKPOINT_ROOT, output_prefix)
+
+# Grava em arquivo temporario e renomeia: um desligamento no meio da gravacao nao
+# deixa checkpoint corrompido com o nome final.
+save_rds_atomic <- function(obj, path) {
+  tmp <- paste0(path, ".tmp")
+  saveRDS(obj, tmp)
+  if (file.exists(path)) unlink(path)
+  if (!file.rename(tmp, path)) stop("Nao foi possivel gravar o checkpoint: ", path)
+  invisible(path)
+}
+
+read_rds_safe <- function(path) {
+  if (!file.exists(path)) return(NULL)
+  tryCatch(readRDS(path), error = function(e) {
+    message("Checkpoint ilegivel sera refeito: ", path); NULL
+  })
+}
+
+# Tudo que muda os resultados. Se a pasta foi criada com outra configuracao, a
+# execucao para em vez de misturar resultados incompativeis.
+checkpoint_config <- function(model_name, grid) {
+  list(model_name = model_name, grid = as.data.frame(grid),
+       PRED_HORIZON = PRED_HORIZON, INPUT_LEN = INPUT_LEN, N_SERIES = N_SERIES,
+       N_WINDOWS = N_WINDOWS, N_VALIDATION_ORIGINS = N_VALIDATION_ORIGINS,
+       BASE_SEED = BASE_SEED, FREQ_MIN_VALID = FREQ_MIN_VALID, FREQ_FALLBACK = FREQ_FALLBACK,
+       filter_names = filter_names, noise_scenarios = noise_scenarios,
+       DM_VARESTIMATOR = DM_VARESTIMATOR, DM_FALLBACK_VARESTIMATOR = DM_FALLBACK_VARESTIMATOR)
+}
+
+check_checkpoint_config <- function(ck_dir, cfg) {
+  dir.create(ck_dir, recursive = TRUE, showWarnings = FALSE)
+  f <- file.path(ck_dir, "config.rds")
+  old <- read_rds_safe(f)
+  if (is.null(old)) { save_rds_atomic(cfg, f); return(invisible(FALSE)) }
+  diff <- names(cfg)[!vapply(names(cfg), function(k) identical(old[[k]], cfg[[k]]), logical(1))]
+  if (length(diff))
+    stop("A pasta de checkpoint '", ck_dir, "' foi criada com outra configuracao (",
+         paste(diff, collapse = ", "), "). Use outro output_prefix ou apague a pasta para recomecar.")
+  invisible(TRUE)
+}
+
+filter_checkpoint_path <- function(ck_dir, series_id, scenario_name, j) {
+  file.path(ck_dir, sprintf("%s__%s__%02d_%s.rds", series_id, scenario_name, j, filter_names[j]))
+}
+
+current_rng_state <- function() {
+  if (exists(".Random.seed", envir = globalenv(), inherits = FALSE))
+    get(".Random.seed", envir = globalenv(), inherits = FALSE) else NULL
+}
+
+# Junta todos os checkpoints de uma pasta (ordenados por serie, cenario e filtro).
+collect_checkpoints <- function(ck_dir) {
+  files <- list.files(ck_dir, pattern = "__[0-9]{2}_.*[.]rds$", full.names = TRUE)
+  parts <- Filter(Negate(is.null), lapply(files, read_rds_safe))
+  if (!length(parts)) return(list(results = NULL, errors = data.frame()))
+  ord <- order(vapply(parts, `[[`, numeric(1), "i"), vapply(parts, `[[`, numeric(1), "s"),
+               vapply(parts, `[[`, numeric(1), "j"))
+  parts <- parts[ord]
+  errs <- Filter(Negate(is.null), lapply(parts, `[[`, "errors"))
+  list(results = do.call(rbind, lapply(parts, `[[`, "row")),
+       errors = if (length(errs)) do.call(rbind, errs) else data.frame())
+}
+
 # series_idx: indices (1..N_SERIES) a rodar; o padrao roda todas. Permite dividir o
 # experimento em processos paralelos sem mudar as sementes (que dependem de i).
-run_experiment <- function(model_name, grid, output_prefix, series_idx = NULL) {
+# Processos paralelos podem usar o mesmo output_prefix (cada um grava arquivos
+# diferentes); no fim, rode collect_experiment(output_prefix) para juntar tudo.
+run_experiment <- function(model_name, grid, output_prefix, series_idx = NULL,
+                           checkpoint_dir = checkpoint_dir_for(output_prefix)) {
   start_time <- Sys.time()
+  check_checkpoint_config(checkpoint_dir, checkpoint_config(model_name, grid))
   series_list <- load_m4_hourly(N_SERIES)
-  result_rows <- list(); counter <- 1L
-  error_rows <- list(); error_counter <- 1L
   total_test_points <- N_WINDOWS * PRED_HORIZON
   if (is.null(series_idx)) series_idx <- seq_along(series_list)
+  n_done_before <- 0L; n_new <- 0L
 
   for (i in series_idx) {
     series_id <- names(series_list)[i]
@@ -406,8 +497,19 @@ run_experiment <- function(model_name, grid, output_prefix, series_idx = NULL) {
       message("Pulando ", series_id, ": historico insuficiente.")
       next
     }
-    for (scenario_name in names(noise_scenarios)) {
+    for (s_idx in seq_along(noise_scenarios)) {
+      scenario_name <- names(noise_scenarios)[s_idx]
       scenario <- noise_scenarios[[scenario_name]]
+      paths <- vapply(seq_along(filter_names), function(j)
+        filter_checkpoint_path(checkpoint_dir, series_id, scenario_name, j), character(1))
+      saved <- lapply(paths, read_rds_safe)
+      missing <- which(vapply(saved, is.null, logical(1)))
+      if (!length(missing)) {
+        n_done_before <- n_done_before + length(filter_names)
+        next
+      }
+      first_missing <- missing[1]
+
       corrupted <- corrupt_sensor_signal(clean, scenario$noise_lvl, scenario$outlier_ratio,
                                          scenario$spike_mag, seed = BASE_SEED + i)
       train_end <- length(clean) - total_test_points
@@ -417,9 +519,20 @@ run_experiment <- function(model_name, grid, output_prefix, series_idx = NULL) {
       freq <- if (is.finite(freq_raw) && freq_raw >= FREQ_MIN_VALID) as.integer(freq_raw) else
         max(2L, as.integer(FREQ_FALLBACK))
       baseline_errors <- NULL
-      
+
       message("\n[", model_name, "] ", series_id, " | ", scenario_name)
-      for (j in seq_along(filter_names)) {
+      if (first_missing > 1L) {
+        # Retomada no meio do cenario: recupera o baseline e o estado aleatorio
+        # do ultimo filtro concluido.
+        n_done_before <- n_done_before + first_missing - 1L
+        base_ck <- saved[[1]]
+        if (!is.null(base_ck$errors)) baseline_errors <- base_ck$errors$Error
+        rng <- saved[[first_missing - 1L]]$rng
+        if (!is.null(rng)) assign(".Random.seed", rng, envir = globalenv())
+        message("  (checkpoint) retomando a partir de ", filter_names[first_missing])
+      }
+
+      for (j in first_missing:length(filter_names)) {
         filter_family <- filter_names[j]
         candidates <- get_filter_candidates(j, freq)
         t0 <- Sys.time()
@@ -428,7 +541,7 @@ run_experiment <- function(model_name, grid, output_prefix, series_idx = NULL) {
         best_cand <- selection$candidate
         best_params <- selection$params
         
-        actual_all <- numeric(0); pred_all <- numeric(0)
+        actual_all <- numeric(0); pred_all <- numeric(0); error_df <- NULL
         filter_statuses <- character(0); filter_errors <- character(0)
         rolling_ok <- TRUE; failure_reason <- NA_character_
         for (w in 0:(N_WINDOWS - 1L)) {
@@ -476,12 +589,11 @@ run_experiment <- function(model_name, grid, output_prefix, series_idx = NULL) {
           } else {
             dm_note <- "NO_BASELINE"
           }
-          error_rows[[error_counter]] <- data.frame(
+          error_df <- data.frame(
             Model = model_name, Series_ID = series_id, Scenario = scenario_name,
             Filter = filter_family, Window = rep(0:(N_WINDOWS - 1L), each = PRED_HORIZON),
             Horizon = rep(seq_len(PRED_HORIZON), N_WINDOWS),
             Actual = actual_all, Predicted = pred_all, Error = errors, stringsAsFactors = FALSE)
-          error_counter <- error_counter + 1L
         } else {
           status <- "FAILED_ROLLING"
           metrics <- c(RMSE = NA_real_, MAE = NA_real_, MAPE = NA_real_, MAPE_n = 0)
@@ -506,16 +618,32 @@ run_experiment <- function(model_name, grid, output_prefix, series_idx = NULL) {
           Runtime_Seconds = as.numeric(difftime(Sys.time(), t0, units = "secs")),
           stringsAsFactors = FALSE
         )
-        result_rows[[counter]] <- row; counter <- counter + 1L
+        save_rds_atomic(list(i = i, s = s_idx, j = j, row = row, errors = error_df,
+                             rng = current_rng_state()), paths[j])
+        n_new <- n_new + 1L
         message(sprintf("  %s | RMSE=%s | %s", filter_family,
                         ifelse(is.finite(row$RMSE), round(row$RMSE, 4), "NA"), status))
       }
-      if (counter %% 20L == 0L) saveRDS(result_rows, sprintf("checkpoint_%s.rds", model_name))
     }
   }
-  
-  if (!length(result_rows)) stop("Nenhum resultado foi produzido.")
-  results <- do.call(rbind, result_rows)
+  message(sprintf("Checkpoints: %d ja existiam, %d novos nesta execucao.", n_done_before, n_new))
+  collect_experiment(output_prefix, checkpoint_dir, series_ids = names(series_list)[series_idx],
+                     start_time = start_time)
+}
+
+# Junta os checkpoints e grava o Excel final (Resultados, Resumo, Erros_Teste).
+# Pode ser chamada sozinha, por exemplo depois de rodar processos em paralelo.
+collect_experiment <- function(output_prefix, checkpoint_dir = checkpoint_dir_for(output_prefix),
+                               series_ids = NULL, start_time = Sys.time()) {
+  ck <- collect_checkpoints(checkpoint_dir)
+  results <- ck$results; errors_df <- ck$errors
+  if (!is.null(series_ids) && !is.null(results)) {
+    results <- results[results$Series_ID %in% series_ids, , drop = FALSE]
+    if (nrow(errors_df)) errors_df <- errors_df[errors_df$Series_ID %in% series_ids, , drop = FALSE]
+  }
+  if (is.null(results) || !nrow(results)) stop("Nenhum resultado foi produzido.")
+  rownames(results) <- NULL; rownames(errors_df) <- NULL
+  total_test_points <- N_WINDOWS * PRED_HORIZON
   summary_rows <- list(); s <- 1L
   for (sc in unique(results$Scenario)) {
     d <- results[results$Scenario == sc & results$Status == "CONVERGED" & is.finite(results$RMSE), ]
@@ -590,7 +718,6 @@ run_experiment <- function(model_name, grid, output_prefix, series_idx = NULL) {
   summary_df <- do.call(rbind, summary_rows)
   out_file <- sprintf("%s_industrial_sensors_results_%dpts.xlsx", output_prefix, total_test_points)
   # Erros ponto a ponto do teste: permitem refazer o DM (ou outro teste) sem rodar de novo.
-  errors_df <- if (length(error_rows)) do.call(rbind, error_rows) else data.frame()
   writexl::write_xlsx(list(Resultados_Gerais = results, Resumo_Estatistico = summary_df,
                            Erros_Teste = errors_df), out_file)
   elapsed <- as.numeric(difftime(Sys.time(), start_time, units = "mins"))

@@ -31,3 +31,16 @@ with horizon h=1" e devolve um teste com h=1, sem marcar isso no resultado.
 Obs.: `ts_fil_spline.R` nao foi enviado; usei o do tspredit (deu os mesmos RMSE).
 Na rodada nova, 100 linhas de ema/seasonal tiveram RMSE com diferencas numericas minimas
 (mesmos parametros; provavel versao de R/BLAS), sem efeito no DM.
+
+## Checkpoint (retomar apos interrupcao)
+- Cada (serie, cenario, filtro) concluido e salvo em `checkpoints/<output_prefix>/`.
+  Se o computador desligar, rode o mesmo script de novo: o que ja foi salvo e pulado.
+- Gravacao atomica (arquivo .tmp renomeado), entao desligar no meio nao corrompe nada.
+- O estado do gerador aleatorio e salvo junto: a retomada da exatamente os mesmos
+  resultados de uma execucao sem parada (testado com interrupcao antes e depois de emd/remd).
+- `config.rds` guarda a configuracao (PRED_HORIZON, N_WINDOWS, grade, cenarios...). Se
+  mudar algo, a execucao para com mensagem: use outro `output_prefix` ou apague a pasta.
+- `collect_experiment("ARIMA")` junta os checkpoints e grava o Excel sem rodar nada
+  (util apos rodar processos em paralelo com `series_idx`).
+- O CSV do M4 e salvo em `Hourly-train.csv` no primeiro download.
+- `PRED_HORIZON <- 5L`, como na versao enviada.
