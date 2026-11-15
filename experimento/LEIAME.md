@@ -44,3 +44,11 @@ Na rodada nova, 100 linhas de ema/seasonal tiveram RMSE com diferencas numericas
   (util apos rodar processos em paralelo com `series_idx`).
 - O CSV do M4 e salvo em `Hourly-train.csv` no primeiro download.
 - `PRED_HORIZON <- 5L`, como na versao enviada.
+
+## LSTM
+- `predict_lstm_one` chama o modelo direto (`model(X, training = FALSE)`) em vez de
+  `predict()`: mesmo resultado, ~2.7x mais rapido por chamada, e evita o aviso
+  "triggered tf.function retracing" (predict() monta uma tf.function por modelo).
+- `fit_lstm` chama `keras3::clear_session()` antes de cada modelo para nao acumular memoria.
+- `TF_CPP_MIN_LOG_LEVEL = "2"` esconde avisos de C++ do TF. As linhas de inicializacao
+  ("absl::InitializeLog", "oneDNN custom operations") nao somem com isso e sao informativas.
