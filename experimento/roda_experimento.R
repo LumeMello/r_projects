@@ -4,7 +4,7 @@
 #
 # Terminal:
 #   Rscript roda_experimento.R <MODELO> <H> [VARIANTES] [PARTE]
-#     MODELO     ARIMA | ARIMA_FOURIER | SARIMA | MLP | ELM | LSTM
+#     MODELO     ARIMA | ARIMA_FOURIER | SARIMA | MLP | ELM   (LSTM desativado: ver abaixo)
 #     H          horizonte de previsao (3, 5, 10)
 #     VARIANTES  "base" ou combinacao com "+":
 #                  S24   redes com a entrada sazonal x[t-24]            -> prefixo <MODELO>_S24
@@ -37,15 +37,16 @@ VARIANTES <- "base"
 PARTE <- NA_character_          # ex.: "1/4", ou "junta"
 
 # ---------- Grades de hiperparametros ----------
-# CONFIRA com os seus scripts originais (MLP.R, ELM.R, LSTM.R) e copie a grade usada.
+# CONFIRA com os seus scripts originais (MLP.R, ELM.R) e copie a grade usada.
 # ELM: valores selecionados nos seus resultados (nhid = 5, 10, 20, 50).
 GRIDS <- list(
   ARIMA = data.frame(dummy = 1), ARIMA_FOURIER = data.frame(dummy = 1), SARIMA = data.frame(dummy = 1),
   ELM = data.frame(nhid = c(5L, 10L, 20L, 50L)),
-  MLP = expand.grid(size = c(5L, 10L), decay = c(0.001, 0.01), maxit = 300L),      # <- COPIE A SUA GRADE
-  LSTM = data.frame(units = c(16L, 32L), dropout = c(0.1, 0.1), learning_rate = c(0.001, 0.001),
-                    epochs = c(60L, 120L), batch_size = c(32L, 32L))
+  MLP = expand.grid(size = c(5L, 10L), decay = c(0.001, 0.01), maxit = 300L)       # <- COPIE A SUA GRADE
 )
+# LSTM desativado (nao cabe no prazo). Para reativar, acrescente a GRIDS:
+#   LSTM = data.frame(units = c(16L, 32L), dropout = c(0.1, 0.1), learning_rate = c(0.001, 0.001),
+#                     epochs = c(60L, 120L), batch_size = c(32L, 32L))
 
 # ---------- Argumentos ----------
 args <- commandArgs(trailingOnly = TRUE)
@@ -53,20 +54,19 @@ if (length(args) >= 1L) MODELO <- args[1]
 if (length(args) >= 2L) H <- as.integer(args[2])
 if (length(args) >= 3L) VARIANTES <- args[3]
 if (length(args) >= 4L) PARTE <- args[4]
+if (toupper(MODELO) == "LSTM") stop("LSTM desativado neste script (nao cabe no prazo). Veja o comentario em GRIDS para reativar.")
 if (!MODELO %in% names(GRIDS)) stop("MODELO deve ser um de: ", paste(names(GRIDS), collapse = ", "))
 if (!is.finite(H) || H < 1L) stop("H deve ser um inteiro positivo.")
 vars <- toupper(strsplit(VARIANTES, "+", fixed = TRUE)[[1]])
 vars <- setdiff(vars, "BASE")
 validas <- c("S24", "S24W", "CT", "FACT", "REP3", "REP5", "N100", "N200", "N414")
 if (length(setdiff(vars, validas))) stop("Variantes desconhecidas: ", paste(setdiff(vars, validas), collapse = ", "))
-redes <- MODELO %in% c("MLP", "ELM", "LSTM")
+redes <- MODELO %in% c("MLP", "ELM")
 if (!redes && any(vars %in% c("S24", "S24W", "CT")))
-  stop("S24, S24W e CT so se aplicam a MLP, ELM e LSTM (os modelos ARIMA ja treinam so com a serie contaminada).")
+  stop("S24, S24W e CT so se aplicam a MLP e ELM (os modelos ARIMA ja treinam so com a serie contaminada).")
 if (all(c("S24", "S24W") %in% vars)) stop("Use S24 ou S24W, nao os dois.")
 
 source("IC_Common.R")
-if (MODELO == "LSTM" && !requireNamespace("keras3", quietly = TRUE))
-  stop("Pacote keras3 ausente. Execute install.packages('keras3') e keras3::install_keras().")
 
 # ---------- Configuracao da rodada ----------
 PRED_HORIZON <- H

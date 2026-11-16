@@ -15,7 +15,7 @@ run_experiment("ARIMA", data.frame(dummy = 1), "ARIMA_FACT")
 
 ## Scripts de execução
 
-`roda_experimento.R` roda qualquer modelo (ARIMA, ARIMA_FOURIER, SARIMA, MLP, ELM, LSTM) e
+`roda_experimento.R` roda os modelos ARIMA, ARIMA_FOURIER, SARIMA, MLP e ELM (LSTM desativado por prazo) e
 qualquer variante; `roda_paralelo.sh` divide as séries em N processos e junta no fim.
 **Confira a grade do MLP** no topo do `roda_experimento.R` (copie a do seu MLP.R).
 
@@ -44,7 +44,7 @@ para mostrar só os 4 originais nas figuras principais.
 | `SCENARIO_SET <- "factorial"` | 2,5 (10 cenários em vez de 4) | os 4 originais podem ser reaproveitados se rodar só os 6 novos em outra pasta |
 | `N_REPLICATIONS <- R` | R | a réplica 1 é o experimento original (reaproveita checkpoint) |
 | `N_SERIES <- N` | N / 50 | com `SERIES_SELECTION = "first"` as 50 já feitas são reaproveitadas |
-| `TARGET_MODE <- "corrupted"` | 1 (rodada nova só para MLP/ELM/LSTM) | ARIMA já não usa alvo limpo no treino |
+| `TARGET_MODE <- "corrupted"` | 1 (rodada nova só para MLP/ELM) | ARIMA já não usa alvo limpo no treino |
 | `ARIMA_FOURIER` | ~1,5–2 | ARIMA com termos de Fourier de 24 h |
 | `SARIMA` | bem maior (lento) | use em um subconjunto, se o revisor insistir |
 | `NN_SEASONAL_LAGS <- c(24L)` | ~1 | só acrescenta uma entrada às redes |

@@ -4,7 +4,7 @@
 #   ex.: bash roda_paralelo.sh ARIMA_FOURIER 5 base 4
 #        bash roda_paralelo.sh MLP 3 S24+FACT 6
 # Logs em logs/<MODELO>_<VARIANTES>_h<H>_parte<k>.log. Se cair no meio, rode de novo:
-# o checkpoint retoma de onde parou. Para LSTM use poucos processos (memoria/GPU).
+# o checkpoint retoma de onde parou.
 set -u
 MODELO="$1"; H="$2"; VAR="${3:-base}"; N="${4:-4}"
 mkdir -p logs
