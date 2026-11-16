@@ -59,7 +59,7 @@ HEAT_LIMIT <- 50                  # Delta RMSE% no extremo da escala de cor (val
 
 FILTER_ORDER <- c("non_filter", "ma", "ema", "LOESS", "LOWESS", "spline", "winsor", "qes",
                   "fft", "wavelet", "emd", "remd", "hp", "kalman", "seasonal", "gabor")
-FILTER_LABEL <- c(non_filter = "Baseline", ma = "MA", ema = "EMA", LOESS = "Smooth (LOESS)",
+FILTER_LABEL <- c(non_filter = "Baseline", ma = "MA", ema = "EMA", LOESS = "Prog. Smooth",
                   LOWESS = "LOWESS", spline = "Spline", winsor = "Winsor", qes = "QES",
                   fft = "FFT", wavelet = "Wavelet", emd = "EMD", remd = "REMD", hp = "HP",
                   kalman = "Kalman", seasonal = "Seasonal", gabor = "Gabor")
