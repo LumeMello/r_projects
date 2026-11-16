@@ -488,7 +488,10 @@ select_validation <- function(model_name, candidates, grid, x_train, y_train, fr
 # Para recomecar do zero, apague a pasta do checkpoint ou use outro output_prefix.
 CHECKPOINT_ROOT <- "checkpoints"
 
-checkpoint_dir_for <- function(output_prefix) file.path(CHECKPOINT_ROOT, output_prefix)
+# Uma pasta por prefixo e horizonte (ex.: checkpoints/ARIMA_30pts), para que rodar
+# h = 3, 5 e 10 com o mesmo prefixo nao misture nem bloqueie as rodadas.
+checkpoint_dir_for <- function(output_prefix)
+  file.path(CHECKPOINT_ROOT, sprintf("%s_%dpts", output_prefix, N_WINDOWS * PRED_HORIZON))
 
 # Grava em arquivo temporario e renomeia: um desligamento no meio da gravacao nao
 # deixa checkpoint corrompido com o nome final.
