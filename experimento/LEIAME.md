@@ -52,3 +52,17 @@ Na rodada nova, 100 linhas de ema/seasonal tiveram RMSE com diferencas numericas
 - `fit_lstm` chama `keras3::clear_session()` antes de cada modelo para nao acumular memoria.
 - `TF_CPP_MIN_LOG_LEVEL = "2"` esconde avisos de C++ do TF. As linhas de inicializacao
   ("absl::InitializeLog", "oneDNN custom operations") nao somem com isso e sao informativas.
+
+## Figuras do artigo (`gera_graficos.R`)
+Rode `Rscript gera_graficos.R` na pasta dos resultados (`ARIMA_/MLP_/ELM_industrial_sensors_results_<N>pts.xlsx`,
+horizonte = N / 10) com o `IC_Common.R` e os `ts_fil_*.R`. Sai em `figuras/` (PNG 300 dpi + PDF):
+1. `1_cd_<modelo>_hXX`: Diferenca Critica (Nemenyi; CD = 3,26 para k = 16, N = 50), um painel por cenario.
+2. `2_heatmap_delta_rmse`: Delta RMSE% mediano vs. baseline, modelo x (cenario, h); `*` = Wilcoxon-Holm <= 0,05.
+   Tabela em `figuras/tabela_delta_rmse_wilcoxon.csv`. Escala satura em +-`HEAT_LIMIT` (50%).
+3. `3_pareto_rank` e `3_pareto_delta_rmse`: overhead (ms, log) x rank medio / Delta RMSE% em High_Noise,
+   cor = O(1) vs. Batch (tabela `INCREMENTAL` no topo do script). Overhead de `tabela7_overhead.csv`
+   (colunas Filter, Overhead_ms) se existir; senao e medido e salvo em `overhead_medido.csv`.
+4. `4_diagnostico_<modelo>`: (a) Error Ratio por passo (precisa da aba `Erros_Teste`, usa o maior h),
+   (b) ultimas 48 h de uma serie com ciclo de 24 h, com a % da amplitude de 24 h retida.
+5. `5_dm_series_hXX`: melhor / indistinguivel / pior que o baseline pelo DM (p < 0,05 em cada cauda).
+Textos ficam na lista `TXT` no topo do script (para traduzir).
