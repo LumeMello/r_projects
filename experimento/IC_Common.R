@@ -574,8 +574,10 @@ collect_checkpoints <- function(ck_dir) {
 # experimento em processos paralelos sem mudar as sementes (que dependem de i).
 # Processos paralelos podem usar o mesmo output_prefix (cada um grava arquivos
 # diferentes); no fim, rode collect_experiment(output_prefix) para juntar tudo.
+# collect = FALSE: so calcula e salva checkpoints (use nas partes de uma rodada paralela
+# e junte no fim com collect_experiment(output_prefix)).
 run_experiment <- function(model_name, grid, output_prefix, series_idx = NULL,
-                           checkpoint_dir = checkpoint_dir_for(output_prefix)) {
+                           checkpoint_dir = checkpoint_dir_for(output_prefix), collect = TRUE) {
   start_time <- Sys.time()
   check_checkpoint_config(checkpoint_dir, checkpoint_config(model_name, grid))
   series_list <- load_m4_hourly(N_SERIES)
@@ -731,6 +733,7 @@ run_experiment <- function(model_name, grid, output_prefix, series_idx = NULL,
     }
   }
   message(sprintf("Checkpoints: %d ja existiam, %d novos nesta execucao.", n_done_before, n_new))
+  if (!collect) return(invisible(NULL))
   collect_experiment(output_prefix, checkpoint_dir, series_ids = names(series_list)[series_idx],
                      start_time = start_time)
 }

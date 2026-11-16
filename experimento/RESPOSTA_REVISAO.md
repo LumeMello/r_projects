@@ -13,6 +13,30 @@ SCENARIO_SET <- "factorial"
 run_experiment("ARIMA", data.frame(dummy = 1), "ARIMA_FACT")
 ```
 
+## Scripts de execução
+
+`roda_experimento.R` roda qualquer modelo (ARIMA, ARIMA_FOURIER, SARIMA, MLP, ELM, LSTM) e
+qualquer variante; `roda_paralelo.sh` divide as séries em N processos e junta no fim.
+**Confira a grade do MLP** no topo do `roda_experimento.R` (copie a do seu MLP.R).
+
+```bash
+# teste de 1-2 min antes de cada rodada longa
+IC_TESTE_RAPIDO=1 Rscript roda_experimento.R MLP 5 S24
+
+# rodadas (h = 3, 5, 10), em 4 processos
+bash roda_paralelo.sh ARIMA 5 FACT 4           # original + cenarios fatoriais
+bash roda_paralelo.sh ARIMA_FOURIER 5 FACT 4   # modelo sazonal
+bash roda_paralelo.sh MLP 5 FACT 4
+bash roda_paralelo.sh MLP 5 CT+FACT 4          # alvo contaminado  -> MLP_CT
+bash roda_paralelo.sh MLP 5 S24+FACT 4         # lag de 24 h       -> MLP_S24
+bash roda_paralelo.sh ELM 5 REP3 4             # 3 realizacoes do ruido
+```
+
+No RStudio: edite `MODELO`, `H`, `VARIANTES` e `PARTE` no topo do script e rode com Source.
+Como FACT, REPx e Nx incluem os resultados originais, rodar já com `FACT` substitui a
+rodada base (os 4 cenários originais saem iguais); use `PLOT_SCENARIOS` no `gera_graficos.R`
+para mostrar só os 4 originais nas figuras principais.
+
 ## Custo (referência medida: ARIMA, 50 séries, 4 cenários, h = 5 ≈ 6,4 h em 1 núcleo)
 
 | Mudança | Multiplica o tempo por | Observação |

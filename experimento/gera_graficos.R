@@ -25,7 +25,9 @@ RESULTS_DIR <- "."
 FIG_DIR <- "figuras"
 # Modelos (prefixo do arquivo). Acrescente variantes rodadas com outro output_prefix,
 # ex.: "MLP_CT" (alvo contaminado) ou "MLP_S24" (lags sazonais).
-MODELS <- c("ARIMA", "ARIMA_FOURIER", "SARIMA", "MLP", "ELM", "LSTM")
+MODELS <- c("ARIMA", "ARIMA_FOURIER", "SARIMA", "MLP", "ELM", "LSTM",
+            "MLP_S24", "ELM_S24", "LSTM_S24", "MLP_S24W", "ELM_S24W", "LSTM_S24W",
+            "MLP_CT", "ELM_CT", "LSTM_CT", "MLP_S24_CT", "ELM_S24_CT", "LSTM_S24_CT")
 N_WINDOWS_RESULTS <- 10L          # horizonte = pontos de teste / N_WINDOWS_RESULTS
 ALPHA <- 0.05
 
