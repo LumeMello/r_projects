@@ -112,13 +112,27 @@ scen_lab <- function(s) gsub("_", " ", s)
 
 # ------------------------------ Leitura dos dados ----------------------------
 load_results <- function() {
-  pat <- sprintf("^(%s)_industrial_sensors_results_([0-9]+)pts\\.xlsx$", paste(MODELS, collapse = "|"))
-  files <- list.files(RESULTS_DIR, pattern = pat, full.names = TRUE)
-  if (!length(files)) stop("Nenhum arquivo de resultados encontrado em ", normalizePath(RESULTS_DIR))
+  # Nome esperado: <MODELO>_industrial_sensors_results_<N>pts.xlsx (aceita prefixo, ex.: "c07115eb-ARIMA_...").
+  pat <- sprintf("^(?:.*[-_ ])?(%s)_industrial_sensors_results_([0-9]+)pts\\.xlsx$", paste(MODELS, collapse = "|"))
+  files <- list.files(RESULTS_DIR, pattern = "\\.xlsx$", full.names = TRUE, ignore.case = TRUE)
+  files <- files[!startsWith(basename(files), "~$") & grepl(pat, basename(files), perl = TRUE)]
+  if (!length(files)) stop("Nenhum arquivo <MODELO>_industrial_sensors_results_<N>pts.xlsx em ", normalizePath(RESULTS_DIR))
+  info <- t(vapply(basename(files), function(b) {
+    m <- regmatches(b, regexec(pat, b, perl = TRUE))[[1]]; c(m[2], m[3])
+  }, character(2)))
+  key <- paste(info[, 1], info[, 2])
+  if (anyDuplicated(key)) {
+    # Dois arquivos para o mesmo modelo e horizonte: fica o mais recente.
+    mt <- file.mtime(files); o <- order(mt, decreasing = TRUE)
+    keep <- o[!duplicated(key[o])]
+    message("  Aviso: arquivos repetidos para o mesmo modelo/horizonte; usando o mais recente: ",
+            paste(basename(files[setdiff(seq_along(files), keep)]), collapse = ", "), " ignorado(s)")
+    files <- files[sort(keep)]; info <- info[sort(keep), , drop = FALSE]
+  }
   res <- list(); err <- list()
-  for (f in files) {
-    m <- regmatches(basename(f), regexec(pat, basename(f)))[[1]]
-    model <- m[2]; h <- as.integer(m[3]) %/% N_WINDOWS_RESULTS
+  for (k in seq_along(files)) {
+    f <- files[k]
+    model <- info[k, 1]; h <- as.integer(info[k, 2]) %/% N_WINDOWS_RESULTS
     r <- as.data.frame(readxl::read_excel(f, sheet = "Resultados_Gerais"))
     r$Model <- model; r$Horizon <- h
     res[[f]] <- r
@@ -274,7 +288,7 @@ fig_heatmap <- function(dt) {
     facet_grid(Model ~ Scenario, scales = "free_x", space = "free_x", switch = "x") +
     labs(title = TXT$delta, x = NULL, y = NULL, caption = TXT$heat_caption) +
     theme_article() +
-    theme(panel.grid = element_blank(), axis.text.x = element_text(size = 7.5),
+    theme(panel.grid = element_blank(), panel.grid.major = element_blank(), axis.text.x = element_text(size = 7.5),
           strip.placement = "outside", panel.spacing.x = unit(0.35, "lines"),
           legend.key.width = unit(1.6, "cm"), legend.key.height = unit(0.3, "cm"))
   save_fig(p, "2_heatmap_delta_rmse", 7.2, 1.2 + 3.1 * nlevels(d$Model))
