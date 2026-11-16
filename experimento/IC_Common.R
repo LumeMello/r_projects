@@ -19,6 +19,21 @@ BASE_SEED <- 20261107L
 # defina FREQ_MIN_VALID <- 2L.
 FREQ_MIN_VALID <- 12L
 FREQ_FALLBACK <- 24L
+# ---------- Opcoes da revisao (os valores padrao reproduzem o experimento original) ----------
+# Defina depois de source("IC_Common.R") e antes de run_experiment(); use um output_prefix
+# proprio para cada variante (ex.: "MLP_CT" para alvo contaminado).
+SCENARIO_SET <- "original"      # "factorial": + cenarios so-gaussiano (Gauss_*) e so-outlier (Out_*)
+TARGET_MODE <- "clean"          # "corrupted": treino e validacao usam a serie contaminada como alvo
+                                # (como o ARIMA); a avaliacao final continua contra a serie limpa
+N_REPLICATIONS <- 1L            # realizacoes independentes da contaminacao por serie (sementes)
+REPLICATION_SEED_STEP <- 1000003L
+SERIES_SELECTION <- "first"     # "first": as N_SERIES primeiras do M4; "random": amostra aleatoria
+SERIES_SAMPLE_SEED <- 20261107L
+SEASONAL_PERIOD <- 24L          # usado por ARIMA_FOURIER e SARIMA
+FOURIER_K <- 4L                 # pares seno/cosseno do ARIMA_FOURIER
+NN_SEASONAL_LAGS <- integer(0)  # ex.: c(24L) ou c(24L, 168L): entradas extras x[t-24], x[t-168] nas redes
+ARIMA_FAMILY <- c("ARIMA", "ARIMA_FOURIER", "SARIMA")
+
 M4_HOURLY_URL <- "https://raw.githubusercontent.com/M4competition/M4-methods/master/Dataset/Train/Hourly-train.csv"
 
 filter_names <- c("non_filter", "ma", "ema", "LOESS", "LOWESS", "spline",
@@ -31,6 +46,21 @@ noise_scenarios <- list(
   High_Noise = list(noise_lvl = 0.35, outlier_ratio = 0.08, spike_mag = 5.0),
   Sev_Noise  = list(noise_lvl = 0.50, outlier_ratio = 0.15, spike_mag = 7.0)
 )
+
+# Cenarios fatoriais: cada componente isolado com a MESMA intensidade do cenario
+# combinado e os MESMOS sorteios (common random numbers). Assim, para cada nivel,
+# Combinado = Gauss_* + Out_* - serie limpa, exatamente.
+factorial_scenarios <- list(
+  Gauss_Mod  = list(noise_lvl = 0.15, outlier_ratio = 0.00, spike_mag = 0.0),
+  Gauss_High = list(noise_lvl = 0.35, outlier_ratio = 0.00, spike_mag = 0.0),
+  Gauss_Sev  = list(noise_lvl = 0.50, outlier_ratio = 0.00, spike_mag = 0.0),
+  Out_Mod    = list(noise_lvl = 0.00, outlier_ratio = 0.03, spike_mag = 3.0),
+  Out_High   = list(noise_lvl = 0.00, outlier_ratio = 0.08, spike_mag = 5.0),
+  Out_Sev    = list(noise_lvl = 0.00, outlier_ratio = 0.15, spike_mag = 7.0)
+)
+active_scenarios <- function() {
+  if (identical(SCENARIO_SET, "factorial")) c(noise_scenarios, factorial_scenarios) else noise_scenarios
+}
 
 # Carrega dependencias e implementacoes locais das familias de filtros.
 required_packages <- c("forecast", "writexl", "tspredit", "daltoolbox", "daltoolboxdp")
@@ -77,26 +107,17 @@ get_filter_candidates <- function(j, freq) {
   )
 }
 
-# Classificacao conservadora: deve ser refinada caso a implementacao do pacote
-# comprove causalidade. "Potentially_non_causal" nao significa leakage no teste:
-# indica que valores historicos podem ser revistos usando o restante do prefixo.
+# Causalidade medida com verifica_causalidade.R: o filtro e "causal" se a saida no
+# prefixo x[1:n] nao muda quando chegam novas observacoes (10 series, High_Noise,
+# +24 h). Todos os filtros sao aplicados so ao historico disponivel em cada origem
+# (sem vazamento do teste); "non_causal" indica que valores passados do prefixo
+# sao revistos, inclusive o ultimo ponto, que e a origem da previsao.
 filter_causality <- c(
-  non_filter = "causal_by_design",
-  ma = "implementation_dependent",
-  ema = "implementation_dependent",
-  LOESS = "potentially_non_causal",
-  LOWESS = "potentially_non_causal",
-  spline = "potentially_non_causal",
-  winsor = "implementation_dependent",
-  qes = "implementation_dependent",
-  fft = "potentially_non_causal",
-  wavelet = "potentially_non_causal",
-  emd = "potentially_non_causal",
-  remd = "potentially_non_causal",
-  hp = "potentially_non_causal",
-  kalman = "implementation_dependent",
-  seasonal = "potentially_non_causal",
-  gabor = "potentially_non_causal"
+  non_filter = "causal",
+  ma = "causal", ema = "causal", LOESS = "non_causal", LOWESS = "non_causal",
+  spline = "non_causal", winsor = "non_causal", qes = "non_causal", fft = "non_causal",
+  wavelet = "non_causal", emd = "non_causal", remd = "non_causal", hp = "non_causal",
+  kalman = "causal", seasonal = "non_causal", gabor = "non_causal"
 )
 
 apply_filter_candidate <- function(cand, series, max_edge_fill = 10L) {
@@ -131,7 +152,11 @@ corrupt_sensor_signal <- function(series, noise_lvl, outlier_ratio, spike_mag, s
   n <- length(series)
   s <- stats::sd(series, na.rm = TRUE)
   if (!is.finite(s) || s == 0) s <- 0
-  out <- series + stats::rnorm(n, mean = 0, sd = noise_lvl * s)
+  # O ruido gaussiano e sorteado sempre que ha contaminacao (mesmo com noise_lvl = 0),
+  # para que os cenarios so-outlier usem as mesmas posicoes de spikes do cenario
+  # combinado. Para os cenarios originais o resultado e identico ao anterior.
+  out <- series
+  if (s > 0 && (noise_lvl > 0 || outlier_ratio > 0)) out <- series + noise_lvl * s * stats::rnorm(n)
   if (outlier_ratio > 0 && s > 0) {
     n_out <- min(n, max(1L, floor(n * outlier_ratio)))
     idx <- sample(seq_len(n), size = n_out, replace = FALSE)
@@ -158,8 +183,14 @@ load_m4_hourly <- function(n_series = N_SERIES, cache_file = M4_CACHE_FILE) {
   }
   dat <- utils::read.csv(src, stringsAsFactors = FALSE, check.names = FALSE)
   n <- min(as.integer(n_series), nrow(dat))
-  ids <- as.character(dat[[1]][seq_len(n)])
-  values <- lapply(seq_len(n), function(i) {
+  rows_m4 <- if (identical(SERIES_SELECTION, "random")) {
+    old <- if (exists(".Random.seed", envir = globalenv())) get(".Random.seed", envir = globalenv()) else NULL
+    set.seed(SERIES_SAMPLE_SEED); r <- sort(sample.int(nrow(dat), n))
+    if (!is.null(old)) assign(".Random.seed", old, envir = globalenv())
+    r
+  } else seq_len(n)
+  ids <- as.character(dat[[1]][rows_m4])
+  values <- lapply(rows_m4, function(i) {
     x <- suppressWarnings(as.numeric(unlist(dat[i, -1, drop = FALSE], use.names = FALSE)))
     valid <- which(!is.na(x))
     if (!length(valid)) return(numeric(0))
@@ -169,25 +200,40 @@ load_m4_hourly <- function(n_series = N_SERIES, cache_file = M4_CACHE_FILE) {
     x
   })
   names(values) <- ids
+  # Linha no M4: base das sementes, para que a mesma serie tenha a mesma contaminacao
+  # em qualquer selecao (com "first" e igual ao indice i usado antes).
+  attr(values, "m4_row") <- rows_m4
   values
 }
 
-make_supervised_clean <- function(x_corrupted_filtered, y_clean, input_len) {
+# Entradas da rede para prever o valor no tempo t: os lags sazonais pedidos
+# (x[t - L], do mais antigo para o mais recente) seguidos da janela x[(t-input_len):(t-1)].
+# Sem lags sazonais o resultado e identico a versao anterior.
+nn_features <- function(x, t, input_len = INPUT_LEN, lags = NN_SEASONAL_LAGS) {
+  c(x[t - sort(as.integer(lags), decreasing = TRUE)], x[(t - input_len):(t - 1L)])
+}
+
+make_supervised_clean <- function(x_corrupted_filtered, y_clean, input_len, lags = NN_SEASONAL_LAGS) {
   stopifnot(length(x_corrupted_filtered) == length(y_clean))
   n <- length(x_corrupted_filtered)
-  if (n <= input_len) stop("Historico insuficiente para janelas supervisionadas.")
-  idx <- seq_len(n - input_len)
-  X <- t(vapply(idx, function(i) x_corrupted_filtered[i:(i + input_len - 1L)], numeric(input_len)))
-  Y <- as.numeric(y_clean[(input_len + 1L):n])
+  first_t <- max(c(input_len, as.integer(lags))) + 1L
+  if (n < first_t + 1L) stop("Historico insuficiente para janelas supervisionadas.")
+  ts_idx <- first_t:n
+  X <- t(vapply(ts_idx, function(t) nn_features(x_corrupted_filtered, t, input_len, lags),
+                numeric(input_len + length(lags))))
+  Y <- as.numeric(y_clean[ts_idx])
   list(X = X, Y = Y)
 }
 
-recursive_forecast <- function(model, last_window, horizon, predict_one) {
-  window <- as.numeric(last_window)
+# history: serie (filtrada) disponivel ate a origem; as previsoes entram no historico.
+recursive_forecast <- function(model, history, horizon, predict_one,
+                               input_len = INPUT_LEN, lags = NN_SEASONAL_LAGS) {
+  hist <- as.numeric(history)
   preds <- numeric(horizon)
   for (h in seq_len(horizon)) {
-    preds[h] <- as.numeric(predict_one(model, matrix(window, nrow = 1L)))[1]
-    window <- c(window[-1], preds[h])
+    t <- length(hist) + 1L
+    preds[h] <- as.numeric(predict_one(model, matrix(nn_features(hist, t, input_len, lags), nrow = 1L)))[1]
+    hist <- c(hist, preds[h])
   }
   preds
 }
@@ -288,11 +334,29 @@ predict_model_dispatch <- function(model_name, model, Xnew) {
   )
 }
 
-fit_arima_model <- function(x) {
-  forecast::auto.arima(stats::ts(as.numeric(x)), seasonal = FALSE,
-                       stepwise = TRUE, approximation = FALSE)
+fit_arima_model <- function(x, model_name = "ARIMA") {
+  x <- as.numeric(x)
+  switch(model_name,
+    # ARIMA nao sazonal (experimento original)
+    ARIMA = forecast::auto.arima(stats::ts(x), seasonal = FALSE, stepwise = TRUE, approximation = FALSE),
+    # Regressao harmonica dinamica: termos de Fourier do ciclo de SEASONAL_PERIOD h + erros ARIMA
+    ARIMA_FOURIER = {
+      y <- stats::ts(x, frequency = SEASONAL_PERIOD)
+      xr <- forecast::fourier(y, K = FOURIER_K)
+      m <- forecast::auto.arima(y, xreg = xr, seasonal = FALSE, stepwise = TRUE, approximation = FALSE)
+      structure(list(model = m, y = y), class = "ic_dhr")
+    },
+    # SARIMA com periodo SEASONAL_PERIOD (mais lento)
+    SARIMA = forecast::auto.arima(stats::ts(x, frequency = SEASONAL_PERIOD), seasonal = TRUE,
+                                  stepwise = TRUE, approximation = TRUE),
+    stop("Modelo da familia ARIMA desconhecido: ", model_name))
 }
-predict_arima <- function(model, horizon) as.numeric(forecast::forecast(model, h = horizon)$mean)
+predict_arima <- function(model, horizon) {
+  if (inherits(model, "ic_dhr"))
+    return(as.numeric(forecast::forecast(model$model, h = horizon,
+                                         xreg = forecast::fourier(model$y, K = FOURIER_K, h = horizon))$mean))
+  as.numeric(forecast::forecast(model, h = horizon)$mean)
+}
 
 metric_bundle <- function(actual, predicted) {
   e <- actual - predicted
@@ -384,14 +448,14 @@ select_validation <- function(model_name, candidates, grid, x_train, y_train, fr
         if (is.null(filtered$series)) next
         
         pred <- tryCatch({
-          if (model_name == "ARIMA") {
-            fit <- fit_arima_model(filtered$series)
+          if (model_name %in% ARIMA_FAMILY) {
+            fit <- fit_arima_model(filtered$series, model_name)
             predict_arima(fit, fold_size)
           } else {
             sup <- make_supervised_clean(filtered$series, y_prefix, INPUT_LEN)
             fit <- fit_model_dispatch(model_name, sup$X, sup$Y, params,
                                       series_seed + 1000L * fold_id + 10L * g)
-            recursive_forecast(fit, tail(filtered$series, INPUT_LEN), fold_size,
+            recursive_forecast(fit, filtered$series, fold_size,
                                function(m, x) predict_model_dispatch(model_name, m, x))
           }
         }, error = function(e) NULL)
@@ -445,13 +509,25 @@ read_rds_safe <- function(path) {
 
 # Tudo que muda os resultados. Se a pasta foi criada com outra configuracao, a
 # execucao para em vez de misturar resultados incompativeis.
+# N_SERIES (com selecao "first") e N_REPLICATIONS ficam de fora: aumenta-los so acrescenta
+# trabalho e reaproveita o que ja esta salvo. As opcoes da revisao so entram quando
+# diferem do padrao, para que pastas antigas continuem validas.
 checkpoint_config <- function(model_name, grid) {
-  list(model_name = model_name, grid = as.data.frame(grid),
-       PRED_HORIZON = PRED_HORIZON, INPUT_LEN = INPUT_LEN, N_SERIES = N_SERIES,
+  cfg <- list(model_name = model_name, grid = as.data.frame(grid),
+       PRED_HORIZON = PRED_HORIZON, INPUT_LEN = INPUT_LEN,
        N_WINDOWS = N_WINDOWS, N_VALIDATION_ORIGINS = N_VALIDATION_ORIGINS,
        BASE_SEED = BASE_SEED, FREQ_MIN_VALID = FREQ_MIN_VALID, FREQ_FALLBACK = FREQ_FALLBACK,
        filter_names = filter_names, noise_scenarios = noise_scenarios,
        DM_VARESTIMATOR = DM_VARESTIMATOR, DM_FALLBACK_VARESTIMATOR = DM_FALLBACK_VARESTIMATOR)
+  if (!identical(SCENARIO_SET, "original")) cfg$SCENARIO_SET <- SCENARIO_SET
+  if (!identical(TARGET_MODE, "clean")) cfg$TARGET_MODE <- TARGET_MODE
+  if (!identical(SERIES_SELECTION, "first"))
+    cfg[c("SERIES_SELECTION", "SERIES_SAMPLE_SEED", "N_SERIES")] <- list(SERIES_SELECTION, SERIES_SAMPLE_SEED, N_SERIES)
+  if (length(NN_SEASONAL_LAGS)) cfg$NN_SEASONAL_LAGS <- as.integer(NN_SEASONAL_LAGS)
+  if (model_name %in% c("ARIMA_FOURIER", "SARIMA")) cfg$SEASONAL_PERIOD <- SEASONAL_PERIOD
+  if (model_name == "ARIMA_FOURIER") cfg$FOURIER_K <- FOURIER_K
+  if (N_REPLICATIONS > 1L) cfg$REPLICATION_SEED_STEP <- REPLICATION_SEED_STEP
+  cfg
 }
 
 check_checkpoint_config <- function(ck_dir, cfg) {
@@ -466,8 +542,10 @@ check_checkpoint_config <- function(ck_dir, cfg) {
   invisible(TRUE)
 }
 
-filter_checkpoint_path <- function(ck_dir, series_id, scenario_name, j) {
-  file.path(ck_dir, sprintf("%s__%s__%02d_%s.rds", series_id, scenario_name, j, filter_names[j]))
+# Replicacao 1 mantem o nome antigo do arquivo (checkpoints existentes continuam validos).
+filter_checkpoint_path <- function(ck_dir, series_id, scenario_name, j, r = 1L) {
+  rep_tag <- if (r > 1L) sprintf("__r%02d", r) else ""
+  file.path(ck_dir, sprintf("%s__%s%s__%02d_%s.rds", series_id, scenario_name, rep_tag, j, filter_names[j]))
 }
 
 current_rng_state <- function() {
@@ -480,8 +558,9 @@ collect_checkpoints <- function(ck_dir) {
   files <- list.files(ck_dir, pattern = "__[0-9]{2}_.*[.]rds$", full.names = TRUE)
   parts <- Filter(Negate(is.null), lapply(files, read_rds_safe))
   if (!length(parts)) return(list(results = NULL, errors = data.frame()))
-  ord <- order(vapply(parts, `[[`, numeric(1), "i"), vapply(parts, `[[`, numeric(1), "s"),
-               vapply(parts, `[[`, numeric(1), "j"))
+  getr <- function(p) if (is.null(p$r)) 1 else p$r
+  ord <- order(vapply(parts, `[[`, numeric(1), "i"), vapply(parts, getr, numeric(1)),
+               vapply(parts, `[[`, numeric(1), "s"), vapply(parts, `[[`, numeric(1), "j"))
   parts <- parts[ord]
   errs <- Filter(Negate(is.null), lapply(parts, `[[`, "errors"))
   list(results = do.call(rbind, lapply(parts, `[[`, "row")),
@@ -500,19 +579,24 @@ run_experiment <- function(model_name, grid, output_prefix, series_idx = NULL,
   total_test_points <- N_WINDOWS * PRED_HORIZON
   if (is.null(series_idx)) series_idx <- seq_along(series_list)
   n_done_before <- 0L; n_new <- 0L
+  scen_list <- active_scenarios()
+  m4_rows <- attr(series_list, "m4_row"); if (is.null(m4_rows)) m4_rows <- seq_along(series_list)
 
   for (i in series_idx) {
     series_id <- names(series_list)[i]
     clean <- as.numeric(series_list[[i]])
-    if (length(clean) < INPUT_LEN + total_test_points + 40L) {
+    if (length(clean) < INPUT_LEN + max(c(0L, NN_SEASONAL_LAGS)) + total_test_points + 40L) {
       message("Pulando ", series_id, ": historico insuficiente.")
       next
     }
-    for (s_idx in seq_along(noise_scenarios)) {
-      scenario_name <- names(noise_scenarios)[s_idx]
-      scenario <- noise_scenarios[[scenario_name]]
+    sid <- m4_rows[i]                       # base das sementes (= i na selecao "first")
+    for (r in seq_len(N_REPLICATIONS)) {
+    rseed <- (r - 1L) * REPLICATION_SEED_STEP   # 0 na replicacao 1: sementes originais
+    for (s_idx in seq_along(scen_list)) {
+      scenario_name <- names(scen_list)[s_idx]
+      scenario <- scen_list[[scenario_name]]
       paths <- vapply(seq_along(filter_names), function(j)
-        filter_checkpoint_path(checkpoint_dir, series_id, scenario_name, j), character(1))
+        filter_checkpoint_path(checkpoint_dir, series_id, scenario_name, j, r), character(1))
       saved <- lapply(paths, read_rds_safe)
       missing <- which(vapply(saved, is.null, logical(1)))
       if (!length(missing)) {
@@ -522,16 +606,20 @@ run_experiment <- function(model_name, grid, output_prefix, series_idx = NULL,
       first_missing <- missing[1]
 
       corrupted <- corrupt_sensor_signal(clean, scenario$noise_lvl, scenario$outlier_ratio,
-                                         scenario$spike_mag, seed = BASE_SEED + i)
+                                         scenario$spike_mag, seed = BASE_SEED + sid + rseed)
+      # Alvo de treino/validacao: serie limpa (original) ou contaminada (TARGET_MODE).
+      # A avaliacao no teste e sempre contra a serie limpa.
+      y_series <- if (identical(TARGET_MODE, "corrupted")) corrupted else clean
       train_end <- length(clean) - total_test_points
       x_initial <- corrupted[seq_len(train_end)]
-      y_initial <- clean[seq_len(train_end)]
+      y_initial <- y_series[seq_len(train_end)]
       freq_raw <- forecast::findfrequency(x_initial)
       freq <- if (is.finite(freq_raw) && freq_raw >= FREQ_MIN_VALID) as.integer(freq_raw) else
         max(2L, as.integer(FREQ_FALLBACK))
       baseline_errors <- NULL
 
-      message("\n[", model_name, "] ", series_id, " | ", scenario_name)
+      message("\n[", model_name, "] ", series_id, " | ", scenario_name,
+              if (N_REPLICATIONS > 1L) sprintf(" | rep %d", r) else "")
       if (first_missing > 1L) {
         # Retomada no meio do cenario: recupera o baseline e o estado aleatorio
         # do ultimo filtro concluido.
@@ -548,7 +636,7 @@ run_experiment <- function(model_name, grid, output_prefix, series_idx = NULL,
         candidates <- get_filter_candidates(j, freq)
         t0 <- Sys.time()
         selection <- select_validation(model_name, candidates, grid, x_initial, y_initial,
-                                       freq, BASE_SEED + i * 10000L + j * 100L)
+                                       freq, BASE_SEED + sid * 10000L + j * 100L + rseed)
         best_cand <- selection$candidate
         best_params <- selection$params
         
@@ -558,7 +646,7 @@ run_experiment <- function(model_name, grid, output_prefix, series_idx = NULL,
         for (w in 0:(N_WINDOWS - 1L)) {
           cutoff <- train_end + w * PRED_HORIZON
           x_hist <- corrupted[seq_len(cutoff)]
-          y_hist <- clean[seq_len(cutoff)]
+          y_hist <- y_series[seq_len(cutoff)]
           target <- clean[(cutoff + 1L):(cutoff + PRED_HORIZON)]
           filtered <- apply_filter_candidate(best_cand, x_hist)
           filter_statuses <- c(filter_statuses, filtered$status)
@@ -567,14 +655,14 @@ run_experiment <- function(model_name, grid, output_prefix, series_idx = NULL,
             rolling_ok <- FALSE; failure_reason <- paste0("FILTER_FAILED: ", filtered$error); break
           }
           pred <- tryCatch({
-            if (model_name == "ARIMA") {
-              fit <- fit_arima_model(filtered$series)
+            if (model_name %in% ARIMA_FAMILY) {
+              fit <- fit_arima_model(filtered$series, model_name)
               predict_arima(fit, PRED_HORIZON)
             } else {
               sup <- make_supervised_clean(filtered$series, y_hist, INPUT_LEN)
               fit <- fit_model_dispatch(model_name, sup$X, sup$Y, as.list(best_params),
-                                        BASE_SEED + i * 100000L + j * 1000L + w)
-              recursive_forecast(fit, tail(filtered$series, INPUT_LEN), PRED_HORIZON,
+                                        BASE_SEED + sid * 100000L + j * 1000L + w + rseed)
+              recursive_forecast(fit, filtered$series, PRED_HORIZON,
                                  function(m, x) predict_model_dispatch(model_name, m, x))
             }
           }, error = function(e) { failure_reason <<- conditionMessage(e); NULL })
@@ -601,7 +689,7 @@ run_experiment <- function(model_name, grid, output_prefix, series_idx = NULL,
             dm_note <- "NO_BASELINE"
           }
           error_df <- data.frame(
-            Model = model_name, Series_ID = series_id, Scenario = scenario_name,
+            Model = model_name, Series_ID = series_id, Scenario = scenario_name, Replication = r,
             Filter = filter_family, Window = rep(0:(N_WINDOWS - 1L), each = PRED_HORIZON),
             Horizon = rep(seq_len(PRED_HORIZON), N_WINDOWS),
             Actual = actual_all, Predicted = pred_all, Error = errors, stringsAsFactors = FALSE)
@@ -613,7 +701,8 @@ run_experiment <- function(model_name, grid, output_prefix, series_idx = NULL,
         
         params_text <- paste(names(best_params), unlist(best_params), sep = "=", collapse = ";")
         row <- data.frame(
-          Model = model_name, Series_ID = series_id, Scenario = scenario_name,
+          Model = model_name, Series_ID = series_id, Scenario = scenario_name, Replication = r,
+          Target_Mode = TARGET_MODE,
           Noise_Level = scenario$noise_lvl, Outlier_Ratio = scenario$outlier_ratio,
           Filter = filter_family, Filter_Param = best_cand$desc,
           Filter_Causality = unname(filter_causality[filter_family]),
@@ -629,12 +718,13 @@ run_experiment <- function(model_name, grid, output_prefix, series_idx = NULL,
           Runtime_Seconds = as.numeric(difftime(Sys.time(), t0, units = "secs")),
           stringsAsFactors = FALSE
         )
-        save_rds_atomic(list(i = i, s = s_idx, j = j, row = row, errors = error_df,
+        save_rds_atomic(list(i = sid, r = r, s = s_idx, j = j, row = row, errors = error_df,
                              rng = current_rng_state()), paths[j])
         n_new <- n_new + 1L
         message(sprintf("  %s | RMSE=%s | %s", filter_family,
                         ifelse(is.finite(row$RMSE), round(row$RMSE, 4), "NA"), status))
       }
+    }
     }
   }
   message(sprintf("Checkpoints: %d ja existiam, %d novos nesta execucao.", n_done_before, n_new))
@@ -658,6 +748,9 @@ collect_experiment <- function(output_prefix, checkpoint_dir = checkpoint_dir_fo
   summary_rows <- list(); s <- 1L
   for (sc in unique(results$Scenario)) {
     d <- results[results$Scenario == sc & results$Status == "CONVERGED" & is.finite(results$RMSE), ]
+    # Com varias replicacoes, cada serie entra uma vez (RMSE medio das replicacoes).
+    if ("Replication" %in% names(d) && nrow(d) && max(d$Replication) > 1L)
+      d <- stats::aggregate(RMSE ~ Series_ID + Filter, d, mean)
     wide <- reshape(d[, c("Series_ID", "Filter", "RMSE")], idvar = "Series_ID",
                     timevar = "Filter", direction = "wide")
     names(wide) <- sub("^RMSE\\.", "", names(wide))

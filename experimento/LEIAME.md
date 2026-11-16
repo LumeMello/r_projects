@@ -78,3 +78,8 @@ Textos ficam na lista `TXT` no topo do script (para traduzir).
 - Tabelas LaTeX em `tabelas/tab_ranks_<MODELO>.tex` (sidewaystable, \scriptsize, \tabcolsep 3.5pt,
   booktabs; precisa de \usepackage{booktabs,rotating}). Negrito = filtro melhor que o baseline por
   Wilcoxon-Holm (ou Nemenyi com `TABLE_SIG <- "nemenyi"`). Valores tambem em `tabelas/ranks_friedman.csv`.
+
+## Revisao metodologica
+Ver `RESPOSTA_REVISAO.md`: cenarios fatoriais, alvo contaminado, mais series, replicacoes,
+multiplicidade, causalidade medida (`verifica_causalidade.R`, resultado em `causalidade_filtros.csv`)
+e modelos sazonais (ARIMA_FOURIER, SARIMA, lags sazonais nas redes).

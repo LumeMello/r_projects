@@ -23,7 +23,9 @@ suppressPackageStartupMessages({
 # ------------------------------- Configuracao --------------------------------
 RESULTS_DIR <- "."
 FIG_DIR <- "figuras"
-MODELS <- c("ARIMA", "MLP", "ELM")
+# Modelos (prefixo do arquivo). Acrescente variantes rodadas com outro output_prefix,
+# ex.: "MLP_CT" (alvo contaminado) ou "MLP_S24" (lags sazonais).
+MODELS <- c("ARIMA", "ARIMA_FOURIER", "SARIMA", "MLP", "ELM", "LSTM")
 N_WINDOWS_RESULTS <- 10L          # horizonte = pontos de teste / N_WINDOWS_RESULTS
 ALPHA <- 0.05
 
@@ -53,6 +55,7 @@ PARETO_DELTA_CAP <- 100           # eixo y do Pareto (Delta RMSE%) e cortado aqu
 SHOW_TITLES <- TRUE               # FALSE remove titulo/subtitulo de dentro das figuras (legenda no LaTeX)
 CONTAM_SERIES <- NULL             # serie da figura 0 (NULL = a mesma do painel diagnostico)
 CONTAM_LAST_N <- 200L
+CONTAM_SCENARIOS <- c("Clean", "Mod_Noise", "High_Noise", "Sev_Noise")  # paineis da figura 0
 TAB_DIR <- "tabelas"
 TABLE_SIG <- "wilcoxon"           # negrito nas tabelas: "wilcoxon" (Wilcoxon-Holm) ou "nemenyi" (rank < baseline - CD)
 HEAT_LIMIT <- 50                  # Delta RMSE% no extremo da escala de cor (valores acima saturam)
@@ -63,14 +66,34 @@ FILTER_LABEL <- c(non_filter = "Baseline", ma = "MA", ema = "EMA", LOESS = "Prog
                   LOWESS = "LOWESS", spline = "Spline", winsor = "Winsor", qes = "QES",
                   fft = "FFT", wavelet = "Wavelet", emd = "EMD", remd = "REMD", hp = "HP",
                   kalman = "Kalman", seasonal = "Seasonal", gabor = "Gabor")
-SCENARIO_ORDER <- c("Clean", "Mod_Noise", "High_Noise", "Sev_Noise")
+SCENARIO_ORDER <- c("Clean", "Mod_Noise", "High_Noise", "Sev_Noise",
+                    "Gauss_Mod", "Gauss_High", "Gauss_Sev", "Out_Mod", "Out_High", "Out_Sev")
+PLOT_SCENARIOS <- NULL            # NULL = todos os cenarios presentes; ou um subconjunto
+
+# Correcao para multiplos testes (Wilcoxon filtro vs. baseline):
+#   "family"      Holm entre os 15 filtros de cada modelo x cenario x horizonte (original)
+#   "global_holm" Holm sobre TODOS os testes do artigo (todos os modelos, cenarios e horizontes)
+#   "global_bh"   Benjamini-Hochberg (FDR) sobre todos os testes
+# As tres colunas saem em figuras/tabela_delta_rmse_wilcoxon.csv; esta opcao escolhe a usada
+# nos asteriscos do heatmap e no negrito das tabelas.
+MULTIPLICITY <- "family"
+DM_MULTIPLICITY <- "none"         # "bh": BH entre as series de cada filtro (barras do DM)
+
+# Filtros causais medidos com verifica_causalidade.R (os demais revisam o passado).
+CAUSAL_FILTERS <- c("ma", "ema", "kalman")
+SPLIT_CAUSALITY <- TRUE           # separa causais e nao causais nas figuras e tabelas
 
 # Textos das figuras (ingles)
 TXT <- list(
   rank = "Mean rank (Friedman)",
   delta = "Median \u0394RMSE% vs. baseline",
   delta_short = "Median \u0394RMSE%",
-  heat_caption = "* Paired Wilcoxon signed-rank test vs. baseline, Holm-adjusted p \u2264 0.05. Blue = error reduction; red = degradation.",
+  heat_caption = "* Paired Wilcoxon signed-rank test vs. baseline, %s p \u2264 0.05.\nBlue = error reduction; red = degradation. Causal = output at t uses only data up to t.",
+  mult_family = "Holm-adjusted (within each model, scenario and horizon)",
+  mult_global_holm = "Holm-adjusted across all tests",
+  mult_global_bh = "Benjamini-Hochberg-adjusted (FDR) across all tests",
+  causal = "Causal", noncausal = "Non-causal",
+  cd_group = "%s  |  h = %d  |  %s  |  %s",
   cd_sub = "N = %d series, k = %d methods; bars connect methods that are not significantly different (Nemenyi, \u03b1 = %.2f)",
   overhead = "Filter overhead (ms, log scale)",
   incremental = "Update mode",
@@ -93,7 +116,7 @@ TXT <- list(
   dm_equal = "Not significantly different",
   dm_worse = "Significantly worse",
   dm_share = "Share of series",
-  dm_caption = "Diebold-Mariano test (squared-error loss) vs. baseline; one-sided p < 0.05 in each direction.",
+  dm_caption = "Diebold-Mariano test (squared-error loss) vs. baseline; one-sided p < 0.05 in each direction%s.",
   clean = "Clean series", corrupted = "Corrupted series", filtered = "Filtered",
   contam_title = "Contamination profile: series %s",
   contam_sub = "Last %d observations; dual-component contamination applied across the full series prior to windowing.",
@@ -135,13 +158,20 @@ titles <- function(title = NULL, subtitle = NULL) {
   if (SHOW_TITLES) labs(title = title, subtitle = subtitle) else labs(title = NULL, subtitle = NULL)
 }
 
+scen_levels <- function(x) { x <- unique(as.character(x)); c(SCENARIO_ORDER[SCENARIO_ORDER %in% x], sort(setdiff(x, SCENARIO_ORDER))) }
+causal_group <- function(f) factor(ifelse(f %in% c("non_filter", CAUSAL_FILTERS), TXT$causal, TXT$noncausal),
+                                   levels = c(TXT$causal, TXT$noncausal))
+mult_label <- function() switch(MULTIPLICITY, family = TXT$mult_family, global_holm = TXT$mult_global_holm,
+                                global_bh = TXT$mult_global_bh, stop("MULTIPLICITY invalido"))
+
 flab <- function(f) unname(ifelse(f %in% names(FILTER_LABEL), FILTER_LABEL[f], f))
 scen_lab <- function(s) gsub("_", " ", s)
 
 # ------------------------------ Leitura dos dados ----------------------------
 load_results <- function() {
   # Nome esperado: <MODELO>_industrial_sensors_results_<N>pts.xlsx (aceita prefixo, ex.: "c07115eb-ARIMA_...").
-  pat <- sprintf("^(?:.*[-_ ])?(%s)_industrial_sensors_results_([0-9]+)pts\\.xlsx$", paste(MODELS, collapse = "|"))
+  pat <- sprintf("^(?:.*[-_ ])?(%s)_industrial_sensors_results_([0-9]+)pts\\.xlsx$",
+                 paste(MODELS[order(-nchar(MODELS))], collapse = "|"))
   files <- list.files(RESULTS_DIR, pattern = "\\.xlsx$", full.names = TRUE, ignore.case = TRUE)
   files <- files[!startsWith(basename(files), "~$") & grepl(pat, basename(files), perl = TRUE)]
   if (!length(files)) stop("Nenhum arquivo <MODELO>_industrial_sensors_results_<N>pts.xlsx em ", normalizePath(RESULTS_DIR))
@@ -163,40 +193,59 @@ load_results <- function() {
     model <- info[k, 1]; h <- as.integer(info[k, 2]) %/% N_WINDOWS_RESULTS
     r <- as.data.frame(readxl::read_excel(f, sheet = "Resultados_Gerais"))
     r$Model <- model; r$Horizon <- h
+    if (!"Replication" %in% names(r)) r$Replication <- 1L
     res[[f]] <- r
     if ("Erros_Teste" %in% readxl::excel_sheets(f)) {
       e <- as.data.frame(readxl::read_excel(f, sheet = "Erros_Teste"))
       if (nrow(e)) {
         names(e)[names(e) == "Horizon"] <- "Step"
         e$Model <- model; e$Horizon <- h
-        err[[f]] <- e[, c("Model", "Horizon", "Series_ID", "Scenario", "Filter", "Window", "Step", "Error")]
+        if (!"Replication" %in% names(e)) e$Replication <- 1L
+        err[[f]] <- e[, c("Model", "Horizon", "Series_ID", "Scenario", "Replication", "Filter", "Window", "Step", "Error")]
       }
     } else {
       message("  ", basename(f), ": sem aba Erros_Teste (Error Ratio por passo indisponivel para esse arquivo)")
     }
     message("  lido: ", basename(f), " (", model, ", h = ", h, ", ", nrow(r), " linhas)")
   }
-  cols <- c("Model", "Horizon", "Series_ID", "Scenario", "Filter", "Filter_Param",
+  cols <- c("Model", "Horizon", "Series_ID", "Scenario", "Replication", "Filter", "Filter_Param",
             "Status", "RMSE", "DM_Stat", "DM_Pvalue")
-  res <- do.call(rbind, lapply(res, function(r) r[, cols]))
-  res <- res[res$Status == "CONVERGED" & is.finite(res$RMSE), ]
-  list(res = res, err = if (length(err)) do.call(rbind, err) else NULL)
+  raw <- do.call(rbind, lapply(res, function(r) r[, cols]))
+  raw <- raw[raw$Status == "CONVERGED" & is.finite(raw$RMSE), ]
+  err <- if (length(err)) do.call(rbind, err) else NULL
+  if (!is.null(PLOT_SCENARIOS)) {
+    raw <- raw[raw$Scenario %in% PLOT_SCENARIOS, ]
+    if (!is.null(err)) err <- err[err$Scenario %in% PLOT_SCENARIOS, ]
+  }
+  # Com varias realizacoes da contaminacao, as analises por serie (ranks, Wilcoxon,
+  # heatmap, Pareto) usam o RMSE medio das realizacoes; o DM usa cada realizacao.
+  res <- raw
+  if (max(raw$Replication) > 1L) {
+    key <- c("Model", "Horizon", "Series_ID", "Scenario", "Filter")
+    res <- stats::aggregate(RMSE ~ Model + Horizon + Series_ID + Scenario + Filter, raw, mean)
+    k1 <- do.call(paste, raw[key]); k2 <- do.call(paste, res[key])
+    md <- tapply(raw$Filter_Param, k1, function(v) names(sort(table(v), decreasing = TRUE))[1])
+    res$Filter_Param <- unname(md[k2])
+    res$Status <- "CONVERGED"
+    message("  ", max(raw$Replication), " realizacoes da contaminacao: ranks e Wilcoxon usam o RMSE medio por serie")
+  }
+  list(res = res, raw = raw, err = err)
 }
 
 # Matriz series x filtros (so series completas, como no IC_Common.R)
-rmse_matrix <- function(res, model, h, scen) {
+rmse_matrix <- function(res, model, h, scen, filters = FILTER_ORDER) {
   d <- res[res$Model == model & res$Horizon == h & res$Scenario == scen, c("Series_ID", "Filter", "RMSE")]
   if (!nrow(d)) return(NULL)
   w <- reshape(d, idvar = "Series_ID", timevar = "Filter", direction = "wide")
   names(w) <- sub("^RMSE\\.", "", names(w))
-  fs <- intersect(FILTER_ORDER, names(w))
+  fs <- intersect(filters, names(w))
   m <- as.matrix(w[, fs, drop = FALSE]); rownames(m) <- w$Series_ID
   m[stats::complete.cases(m), , drop = FALSE]
 }
 
 combos <- function(res) {
   u <- unique(res[, c("Model", "Horizon", "Scenario")])
-  u <- u[order(match(u$Model, MODELS), u$Horizon, match(u$Scenario, SCENARIO_ORDER)), ]
+  u <- u[order(match(u$Model, MODELS), u$Horizon, match(u$Scenario, scen_levels(u$Scenario))), ]
   rownames(u) <- NULL; u
 }
 
@@ -269,6 +318,23 @@ fig_cd <- function(res) {
     if (!length(plots)) next
     p <- wrap_plots(plots, ncol = 1)
     save_fig(p, sprintf("1_cd_%s_h%02d", sub$Model[1], sub$Horizon[1]), 7.2, 3.2 * length(plots))
+    if (SPLIT_CAUSALITY) {
+      # Rankings separados (cada um com o baseline): k e CD mudam com o tamanho do grupo.
+      groups <- list(causal = c("non_filter", CAUSAL_FILTERS),
+                     noncausal = c("non_filter", setdiff(FILTER_ORDER, c("non_filter", CAUSAL_FILTERS))))
+      for (g in names(groups)) {
+        gl <- if (g == "causal") TXT$causal else TXT$noncausal
+        pg <- lapply(seq_len(nrow(sub)), function(i) {
+          m <- rmse_matrix(res, sub$Model[i], sub$Horizon[i], sub$Scenario[i], filters = groups[[g]])
+          if (is.null(m) || nrow(m) < 2L || ncol(m) < 3L) return(NULL)
+          plot_cd(m, sprintf(TXT$cd_group, sub$Model[i], sub$Horizon[i], scen_lab(sub$Scenario[i]), gl))
+        })
+        pg <- Filter(Negate(is.null), pg)
+        if (!length(pg)) next
+        hh <- if (g == "causal") 2.0 else 3.0
+        save_fig(wrap_plots(pg, ncol = 1), sprintf("1_cd_%s_h%02d_%s", sub$Model[1], sub$Horizon[1], g), 7.2, hh * length(pg))
+      }
+    }
   }
 }
 
@@ -286,18 +352,39 @@ delta_table <- function(res) {
     out[[i]] <- data.frame(Model = cb$Model[i], Horizon = cb$Horizon[i], Scenario = cb$Scenario[i],
                            Filter = fs,
                            Delta = vapply(fs, function(f) stats::median((m[, f] / base - 1) * 100), numeric(1)),
-                           P_Holm = stats::p.adjust(raw_p, "holm"), N = nrow(m))
+                           P_Raw = raw_p, P_Holm_Family = stats::p.adjust(raw_p, "holm"), N = nrow(m))
   }
-  d <- do.call(rbind, out); rownames(d) <- NULL; d
+  d <- do.call(rbind, out); rownames(d) <- NULL
+  d$P_Holm_Global <- stats::p.adjust(d$P_Raw, "holm")
+  d$Q_BH_Global <- stats::p.adjust(d$P_Raw, "BH")
+  d$P_Holm <- switch(MULTIPLICITY, family = d$P_Holm_Family, global_holm = d$P_Holm_Global,
+                     global_bh = d$Q_BH_Global)          # coluna usada nas figuras/tabelas
+  d$Causality <- ifelse(d$Filter %in% CAUSAL_FILTERS, "causal", "non_causal")
+  d
+}
+
+# Quantos filtros sao significativos (melhor ou pior) em cada correcao: apoio ao texto.
+multiplicity_summary <- function(dt) {
+  f <- function(p) is.finite(p) & p <= ALPHA
+  agg <- function(col) stats::aggregate(cbind(Better = f(dt[[col]]) & dt$Delta < 0, Worse = f(dt[[col]]) & dt$Delta > 0) ~
+                                          Model + Horizon + Scenario, dt, sum)
+  a <- agg("P_Holm_Family"); b <- agg("P_Holm_Global"); c <- agg("Q_BH_Global")
+  names(a)[4:5] <- c("Better_HolmFamily", "Worse_HolmFamily")
+  names(b)[4:5] <- c("Better_HolmGlobal", "Worse_HolmGlobal")
+  names(c)[4:5] <- c("Better_BHGlobal", "Worse_BHGlobal")
+  out <- Reduce(function(x, y) merge(x, y, by = c("Model", "Horizon", "Scenario")), list(a, b, c))
+  out$Tests_Total <- nrow(dt)
+  out[order(match(out$Model, MODELS), out$Horizon, match(out$Scenario, scen_levels(out$Scenario))), ]
 }
 
 fig_heatmap <- function(dt) {
   message("2. Heatmap de Delta RMSE%")
   d <- dt
   d$X <- factor(paste0("h=", d$Horizon), levels = paste0("h=", sort(unique(d$Horizon))))
-  d$Scenario <- factor(scen_lab(d$Scenario), levels = scen_lab(SCENARIO_ORDER))
+  d$Scenario <- factor(scen_lab(d$Scenario), levels = scen_lab(scen_levels(d$Scenario)))
   d$Y <- factor(flab(d$Filter), levels = rev(flab(setdiff(FILTER_ORDER, "non_filter"))))
   d$Model <- factor(d$Model, levels = intersect(MODELS, d$Model))
+  d$Group <- causal_group(d$Filter)
   lim <- HEAT_LIMIT
   d$sig <- ifelse(is.finite(d$P_Holm) & d$P_Holm <= ALPHA, "*", "")
   d$txtcol <- ifelse(abs(pmin(pmax(d$Delta, -lim), lim)) / lim > 0.55, "white", COL$ink)
@@ -312,13 +399,15 @@ fig_heatmap <- function(dt) {
                                                      paste0(ifelse(x > 0, "+", ""), x, "%")),
                          name = TXT$delta_short,
                          guide = guide_colourbar(title.position = "top", title.hjust = 0.5)) +
-    facet_grid(Model ~ Scenario, scales = "free_x", space = "free_x", switch = "x") +
-    titles(TXT$delta) + labs(x = NULL, y = NULL, caption = TXT$heat_caption) +
+    (if (SPLIT_CAUSALITY) facet_grid(Model + Group ~ Scenario, scales = "free", space = "free", switch = "x")
+     else facet_grid(Model ~ Scenario, scales = "free_x", space = "free_x", switch = "x")) +
+    titles(TXT$delta) + labs(x = NULL, y = NULL, caption = sprintf(TXT$heat_caption, mult_label())) +
     theme_article() +
     theme(panel.grid = element_blank(), panel.grid.major = element_blank(), axis.text.x = element_text(size = 7.5),
           strip.placement = "outside", panel.spacing.x = unit(0.35, "lines"),
           legend.key.width = unit(1.6, "cm"), legend.key.height = unit(0.3, "cm"))
-  save_fig(p, "2_heatmap_delta_rmse", 7.2, 1.2 + 3.1 * nlevels(d$Model))
+  save_fig(p, "2_heatmap_delta_rmse", max(7.2, 1.6 + 0.62 * nlevels(d$Scenario) * nlevels(d$X)),
+           1.2 + 3.3 * nlevels(d$Model))
 }
 
 # -------------------------- 3. Fronteira de Pareto ---------------------------
@@ -559,9 +648,16 @@ fig_dm <- function(res) {
   identical0 <- is.finite(d$DM_Stat) & d$DM_Stat == 0 & is.finite(d$DM_Pvalue) & d$DM_Pvalue == 1
   # DM_Pvalue e unilateral "greater" (filtro mais preciso que o baseline); a outra
   # cauda e 1 - p (mesma estatistica t).
-  d$Class <- ifelse(!is.finite(d$DM_Pvalue) | identical0, TXT$dm_equal,
-                    ifelse(d$DM_Pvalue < ALPHA, TXT$dm_better,
-                           ifelse(1 - d$DM_Pvalue < ALPHA, TXT$dm_worse, TXT$dm_equal)))
+  pb <- ifelse(!is.finite(d$DM_Pvalue) | identical0, 1, d$DM_Pvalue)   # filtro melhor
+  pw <- ifelse(!is.finite(d$DM_Pvalue) | identical0, 1, 1 - d$DM_Pvalue) # filtro pior
+  if (DM_MULTIPLICITY == "bh") {
+    g <- paste(d$Model, d$Horizon, d$Scenario, d$Filter)
+    for (k in unique(g)) {
+      ii <- which(g == k); adj <- stats::p.adjust(c(pb[ii], pw[ii]), "BH")
+      pb[ii] <- adj[seq_along(ii)]; pw[ii] <- adj[length(ii) + seq_along(ii)]
+    }
+  }
+  d$Class <- ifelse(pb < ALPHA, TXT$dm_better, ifelse(pw < ALPHA, TXT$dm_worse, TXT$dm_equal))
   d$Class <- factor(d$Class, levels = c(TXT$dm_worse, TXT$dm_equal, TXT$dm_better))
   for (h in sort(unique(d$Horizon))) {
     x <- d[d$Horizon == h, ]
@@ -573,18 +669,21 @@ fig_dm <- function(res) {
     ordf <- aggregate(Share ~ Filter, tab[tab$Class == TXT$dm_better, ], mean)
     ordf <- ordf$Filter[order(ordf$Share)]
     tab$F <- factor(flab(as.character(tab$Filter)), levels = flab(as.character(ordf)))
-    tab$Scenario <- factor(scen_lab(as.character(tab$Scenario)), levels = scen_lab(SCENARIO_ORDER))
+    tab$Group <- causal_group(as.character(tab$Filter))
+    tab$Scenario <- factor(scen_lab(as.character(tab$Scenario)), levels = scen_lab(scen_levels(tab$Scenario)))
     tab$Model <- factor(tab$Model, levels = intersect(MODELS, unique(tab$Model)))
     p <- ggplot(tab, aes(Share, F, fill = Class)) +
       geom_col(width = 0.75, colour = "white", linewidth = 0.4) +
       scale_fill_manual(values = setNames(c(COL$bad, COL$neutral, COL$good), levels(d$Class)), name = NULL,
                         breaks = c(TXT$dm_better, TXT$dm_equal, TXT$dm_worse)) +
       scale_x_continuous(labels = scales::percent, breaks = c(0.25, 0.5, 0.75), expand = c(0, 0)) +
-      facet_grid(Model ~ Scenario) +
+      (if (SPLIT_CAUSALITY) facet_grid(Model + Group ~ Scenario, scales = "free_y", space = "free_y")
+       else facet_grid(Model ~ Scenario)) +
       titles(sprintf(TXT$dm_title, h), sprintf(TXT$dm_sub, max(tab$N))) +
-      labs(           x = TXT$dm_share, y = NULL, caption = TXT$dm_caption) +
+      labs(x = TXT$dm_share, y = NULL,
+           caption = sprintf(TXT$dm_caption, if (DM_MULTIPLICITY == "bh") ", Benjamini-Hochberg-adjusted across series" else "")) +
       theme_article() + theme(panel.grid.major.y = element_blank(), panel.spacing.x = unit(0.8, "lines"))
-    save_fig(p, sprintf("5_dm_series_h%02d", h), 9, 1.4 + 2.9 * nlevels(tab$Model))
+    save_fig(p, sprintf("5_dm_series_h%02d", h), max(9, 1.6 + 1.9 * nlevels(tab$Scenario)), 1.6 + 3.1 * nlevels(tab$Model))
   }
 }
 
@@ -596,15 +695,17 @@ fig_contamination <- function() {
   id <- pick_series(sl, if (is.null(CONTAM_SERIES)) DIAG_SERIES else CONTAM_SERIES)
   i <- match(id, names(sl)); cl <- as.numeric(sl[[i]]); n <- length(cl)
   keep <- max(1L, n - CONTAM_LAST_N + 1L):n
-  rows <- lapply(SCENARIO_ORDER, function(sn) {
-    sc <- noise_scenarios[[sn]]
+  allsc <- c(noise_scenarios, if (exists("factorial_scenarios")) factorial_scenarios)
+  scs <- intersect(CONTAM_SCENARIOS, names(allsc))
+  rows <- lapply(scs, function(sn) {
+    sc <- allsc[[sn]]
     # mesma semente em todos os cenarios (common random numbers), contaminacao na serie inteira
     co <- corrupt_sensor_signal(cl, sc$noise_lvl, sc$outlier_ratio, sc$spike_mag, BASE_SEED + i)
     rbind(data.frame(Scenario = sn, Obs = keep, Value = co[keep], Kind = TXT$corrupted),
           data.frame(Scenario = sn, Obs = keep, Value = cl[keep], Kind = TXT$clean))
   })
   d <- do.call(rbind, rows)
-  d$Scenario <- factor(scen_lab(d$Scenario), levels = scen_lab(SCENARIO_ORDER))
+  d$Scenario <- factor(scen_lab(d$Scenario), levels = scen_lab(scs))
   d$Kind <- factor(d$Kind, levels = c(TXT$corrupted, TXT$clean))
   p <- ggplot(d, aes(Obs, Value, colour = Kind, linewidth = Kind)) +
     geom_line() +
@@ -614,7 +715,7 @@ fig_contamination <- function() {
     titles(sprintf(TXT$contam_title, id), sprintf(TXT$contam_sub, length(keep))) +
     labs(x = TXT$contam_x, y = TXT$contam_y) +
     theme_article()
-  save_fig(p, "0_contamination_profile", 7.2, 7.5)
+  save_fig(p, "0_contamination_profile", 7.2, 1.5 + 1.5 * length(scs))
 }
 
 # ------------------- Tabelas LaTeX de ranking de Friedman --------------------
@@ -627,7 +728,7 @@ write_rank_tables <- function(res, dt) {
   cb <- combos(res); out_all <- list()
   for (model in intersect(MODELS, unique(cb$Model))) {
     cm <- cb[cb$Model == model, ]
-    cm <- cm[order(match(cm$Scenario, SCENARIO_ORDER), cm$Horizon), ]
+    cm <- cm[order(match(cm$Scenario, scen_levels(cm$Scenario)), cm$Horizon), ]
     cols <- list(); ns <- integer(0)
     for (i in seq_len(nrow(cm))) {
       m <- rmse_matrix(res, model, cm$Horizon[i], cm$Scenario[i])
@@ -664,8 +765,16 @@ write_rank_tables <- function(res, dt) {
       lab <- flab(f)
       paste(c(lab, cells), collapse = " & ")
     }, "")
+    body <- paste0(body, " \\\\")
+    if (SPLIT_CAUSALITY) {
+      nc <- length(cols) + 1L
+      sec <- function(t) sprintf("\\midrule\n\\multicolumn{%d}{l}{\\textit{%s}} \\\\", nc, t)
+      causal_f <- intersect(fs, CAUSAL_FILTERS); non_f <- setdiff(fs, c("non_filter", CAUSAL_FILTERS))
+      body <- c(body[fs == "non_filter"], sec(paste(TXT$causal, "filters")), body[match(causal_f, fs)],
+                sec(paste(TXT$noncausal, "filters")), body[match(non_f, fs)])
+    }
     crit <- if (TABLE_SIG == "nemenyi") "its mean rank is lower than the baseline's by more than the Nemenyi critical difference" else
-      sprintf("it outperforms the baseline (median $\\Delta$RMSE$<0$, paired Wilcoxon signed-rank test, Holm-adjusted $p \\le %.2f$)", ALPHA)
+      sprintf("it outperforms the baseline (median $\\Delta$RMSE$<0$, paired Wilcoxon signed-rank test, %s $p \\le %.2f$)", mult_label(), ALPHA)
     caption <- sprintf("Mean Friedman ranks of the 16 methods for %s (lower is better; $N=%d$ series per column). Bold entries mark filters for which %s.",
                        model, min(ns), crit)
     tex <- c("% Gerado por gera_graficos.R - requer \\usepackage{booktabs} e \\usepackage{rotating}",
@@ -673,7 +782,7 @@ write_rank_tables <- function(res, dt) {
              sprintf("\\caption{%s}", caption), sprintf("\\label{tab:ranks_%s}", tolower(model)),
              sprintf("\\begin{tabular}{l%s}", paste(rep("r", length(cols)), collapse = "")),
              "\\toprule", paste0(head1, " \\\\"), rules, paste0(head2, " \\\\"), "\\midrule",
-             paste0(body, " \\\\"), "\\bottomrule", "\\end{tabular}", "\\end{sidewaystable}")
+             body, "\\bottomrule", "\\end{tabular}", "\\end{sidewaystable}")
     f <- file.path(TAB_DIR, sprintf("tab_ranks_%s.tex", model))
     writeLines(tex, f, useBytes = TRUE)
     message("  tabela: ", f)
@@ -687,16 +796,17 @@ write_rank_tables <- function(res, dt) {
 main <- function() {
   message("Lendo resultados em ", normalizePath(RESULTS_DIR))
   dat <- load_results()
-  res <- dat$res; err <- dat$err
+  res <- dat$res; err <- dat$err; raw <- dat$raw
   dt <- delta_table(res)
   dir.create(FIG_DIR, showWarnings = FALSE, recursive = TRUE)
   utils::write.csv(dt, file.path(FIG_DIR, "tabela_delta_rmse_wilcoxon.csv"), row.names = FALSE)
+  utils::write.csv(multiplicity_summary(dt), file.path(FIG_DIR, "resumo_multiplicidade.csv"), row.names = FALSE)
   fig_contamination()
   fig_cd(res)
   fig_heatmap(dt)
   fig_pareto(res, dt)
   fig_diagnostic(res, err)
-  fig_dm(res)
+  fig_dm(raw)
   write_rank_tables(res, dt)
   message("Pronto. Figuras em ", normalizePath(FIG_DIR))
 }
