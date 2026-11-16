@@ -32,7 +32,19 @@ bash roda_paralelo.sh MLP 5 S24+FACT 4         # lag de 24 h       -> MLP_S24
 bash roda_paralelo.sh ELM 5 REP3 4             # 3 realizacoes do ruido
 ```
 
-No RStudio: edite `MODELO`, `H`, `VARIANTES` e `PARTE` no topo do script e rode com Source.
+**RStudio Server (servidor remoto):** use `paralelo_rstudio.R` no console. Os processos rodam
+fora da sessão do RStudio, então fechar o navegador não interrompe nada:
+
+```r
+source("paralelo_rstudio.R")
+lancar("ELM", 5, "FACT")          # usa todos os nucleos menos 1
+status("ELM", 5, "FACT")
+lancar_fila(list(c("ARIMA", 3, "FACT"), c("ARIMA", 5, "FACT"), c("ARIMA", 10, "FACT")))
+status_fila()
+parar()                           # o checkpoint guarda o progresso; relance para continuar
+```
+
+Para uma rodada única sem paralelismo,  no topo do script e rode com Source.
 Como FACT, REPx e Nx incluem os resultados originais, rodar já com `FACT` substitui a
 rodada base (os 4 cenários originais saem iguais); use `PLOT_SCENARIOS` no `gera_graficos.R`
 para mostrar só os 4 originais nas figuras principais.
