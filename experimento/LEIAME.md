@@ -66,3 +66,15 @@ horizonte = N / 10) com o `IC_Common.R` e os `ts_fil_*.R`. Sai em `figuras/` (PN
    (b) ultimas 48 h de uma serie com ciclo de 24 h, com a % da amplitude de 24 h retida.
 5. `5_dm_series_hXX`: melhor / indistinguivel / pior que o baseline pelo DM (p < 0,05 em cada cauda).
 Textos ficam na lista `TXT` no topo do script (para traduzir).
+
+### Revisao editorial (figuras em ingles, tabelas, Pareto)
+- Todos os textos das figuras estao em ingles (lista `TXT`); PDF via cairo (suporta Delta, <=, >=).
+  Numeros no padrao ingles (0.1; 1,000). `SHOW_TITLES <- FALSE` tira titulo/subtitulo de dentro
+  das figuras (paineis do diagnostico ficam so com "(a)" e "(b)").
+- Nova figura `0_contamination_profile`: ultimas 200 observacoes, 4 cenarios, subtitulo
+  "Last 200 observations; dual-component contamination applied across the full series prior to windowing."
+- Pareto: um painel por modelo (largura total), rotulos com ggrepel sem limite de sobreposicao e eixo
+  de Delta RMSE% cortado em `PARETO_DELTA_CAP` (100%): pontos acima ficam na borda com o valor real no rotulo.
+- Tabelas LaTeX em `tabelas/tab_ranks_<MODELO>.tex` (sidewaystable, \scriptsize, \tabcolsep 3.5pt,
+  booktabs; precisa de \usepackage{booktabs,rotating}). Negrito = filtro melhor que o baseline por
+  Wilcoxon-Holm (ou Nemenyi com `TABLE_SIG <- "nemenyi"`). Valores tambem em `tabelas/ranks_friedman.csv`.

@@ -1,12 +1,15 @@
 # =============================================================================
 # FIGURAS DO ARTIGO - IC M4 HOURLY / RESILIENCIA A CORRUPCAO
+# Todos os textos das figuras estao em ingles (lista TXT abaixo).
 # Rodar na mesma pasta dos resultados (<MODELO>_industrial_sensors_results_<N>pts.xlsx)
 # e do IC_Common.R. Gera, em FIG_DIR, PNG (300 dpi) e PDF de:
+#   0. Perfil de contaminacao (serie limpa x corrompida, 4 cenarios)
 #   1. Diagramas de Diferenca Critica (Demsar / Nemenyi)
 #   2. Heatmap de Delta RMSE% mediano vs. baseline (asterisco = Wilcoxon-Holm)
 #   3. Fronteira de Pareto: acuracia vs. custo computacional
 #   4. Painel diagnostico de degradacao: (a) Error Ratio por passo, (b) 48 h sobrepostas
 #   5. Barras empilhadas do teste Diebold-Mariano serie a serie
+# e as tabelas LaTeX de ranking de Friedman (uma por modelo) em TAB_DIR.
 # Pacotes: ggplot2, patchwork, ggrepel, readxl (e os do IC_Common.R para o painel 4b
 # e para medir o custo dos filtros quando nao houver tabela de overhead).
 # =============================================================================
@@ -45,6 +48,13 @@ DIAG_CONSERVATIVE <- c("LOESS")   # o baseline entra sempre como referencia
 DIAG_SCENARIO_OVERLAY <- "High_Noise"
 DIAG_SERIES <- NULL               # NULL = primeira serie com ciclo de 24 h detectado
 PARETO_SCENARIO <- "High_Noise"
+PARETO_DELTA_CAP <- 100           # eixo y do Pareto (Delta RMSE%) e cortado aqui; acima disso o
+                                  # ponto fica na borda e o rotulo mostra o valor real
+SHOW_TITLES <- TRUE               # FALSE remove titulo/subtitulo de dentro das figuras (legenda no LaTeX)
+CONTAM_SERIES <- NULL             # serie da figura 0 (NULL = a mesma do painel diagnostico)
+CONTAM_LAST_N <- 200L
+TAB_DIR <- "tabelas"
+TABLE_SIG <- "wilcoxon"           # negrito nas tabelas: "wilcoxon" (Wilcoxon-Holm) ou "nemenyi" (rank < baseline - CD)
 HEAT_LIMIT <- 50                  # Delta RMSE% no extremo da escala de cor (valores acima saturam)
 
 FILTER_ORDER <- c("non_filter", "ma", "ema", "LOESS", "LOWESS", "spline", "winsor", "qes",
@@ -55,26 +65,39 @@ FILTER_LABEL <- c(non_filter = "Baseline", ma = "MA", ema = "EMA", LOESS = "Smoo
                   kalman = "Kalman", seasonal = "Seasonal", gabor = "Gabor")
 SCENARIO_ORDER <- c("Clean", "Mod_Noise", "High_Noise", "Sev_Noise")
 
-# Textos (traduza aqui se o artigo for em ingles)
+# Textos das figuras (ingles)
 TXT <- list(
-  cd_title = "Diagrama de Diferenca Critica",
-  rank = "Rank medio (Friedman)",
-  delta = "Delta RMSE% mediano vs. baseline",
-  delta_short = "Delta RMSE% (mediana)",
-  heat_caption = "* Wilcoxon pareado vs. baseline com correcao de Holm, p <= 0,05. Azul = reducao do erro.",
-  overhead = "Overhead do filtro (ms, escala log)",
-  incremental = "Atualizacao",
-  frontier = "Fronteira de Pareto",
-  step = "Passo dentro da janela de previsao",
-  ratio = "Error Ratio (RMSE filtro / RMSE baseline)",
-  hours = "Horas (ultimas 48 h do treino)",
-  value = "Valor",
-  dm_better = "Significativamente melhor",
-  dm_equal = "Indistinguivel",
-  dm_worse = "Significativamente pior",
-  dm_share = "Proporcao das series",
-  dm_caption = "Diebold-Mariano (perda quadratica) vs. baseline, p < 0,05 unilateral em cada direcao.",
-  clean = "Serie limpa", corrupted = "Serie corrompida", filtered = "Filtrada"
+  rank = "Mean rank (Friedman)",
+  delta = "Median \u0394RMSE% vs. baseline",
+  delta_short = "Median \u0394RMSE%",
+  heat_caption = "* Paired Wilcoxon signed-rank test vs. baseline, Holm-adjusted p \u2264 0.05. Blue = error reduction; red = degradation.",
+  cd_sub = "N = %d series, k = %d methods; bars connect methods that are not significantly different (Nemenyi, \u03b1 = %.2f)",
+  overhead = "Filter overhead (ms, log scale)",
+  incremental = "Update mode",
+  frontier = "Pareto frontier",
+  pareto_title = "Accuracy vs. computational cost",
+  pareto_sub = "%s scenario, averaged over h = %s. Dashed line = baseline (no filter).\nSolid line = %s (lower cost and lower error).",
+  pareto_cap = "Points above %s%% are drawn at the top edge; the label gives the actual value.",
+  step = "Step within the forecast window",
+  ratio = "Error ratio (filter RMSE / baseline RMSE)",
+  er_title = "(a) %s: per-step error ratio (h = %d)",
+  er_sub = "Median across series of the filter RMSE / baseline RMSE at each step; > 1 = worse than the baseline (log scale).",
+  ov_title = "(b) Last 48 h of the training window: series %s, %s scenario",
+  ov_sub = "Coloured line = filtered series. '24 h cycle retained' = amplitude of the 24 h sinusoid in the filtered series / in the clean series.",
+  ov_strip = "%s (%s)\n24 h cycle retained: %.0f%%",
+  hours = "Hour (last 48 h of the training window)",
+  value = "Value",
+  dm_title = "Series-level Diebold-Mariano test (h = %d)",
+  dm_sub = "Share of the %d series in each class; filters ordered by mean share of significant improvement.",
+  dm_better = "Significantly better",
+  dm_equal = "Not significantly different",
+  dm_worse = "Significantly worse",
+  dm_share = "Share of series",
+  dm_caption = "Diebold-Mariano test (squared-error loss) vs. baseline; one-sided p < 0.05 in each direction.",
+  clean = "Clean series", corrupted = "Corrupted series", filtered = "Filtered",
+  contam_title = "Contamination profile: series %s",
+  contam_sub = "Last %d observations; dual-component contamination applied across the full series prior to windowing.",
+  contam_x = "Hourly observation", contam_y = "Value"
 )
 
 # Cores (paleta validada para daltonismo; texto sempre em tinta neutra)
@@ -103,8 +126,13 @@ theme_article <- function(base = 9) {
 save_fig <- function(p, name, width, height) {
   dir.create(FIG_DIR, showWarnings = FALSE, recursive = TRUE)
   ggsave(file.path(FIG_DIR, paste0(name, ".png")), p, width = width, height = height, dpi = 300, bg = "white")
-  ggsave(file.path(FIG_DIR, paste0(name, ".pdf")), p, width = width, height = height, bg = "white")
+  pdf_dev <- if (capabilities("cairo")) grDevices::cairo_pdf else grDevices::pdf
+  ggsave(file.path(FIG_DIR, paste0(name, ".pdf")), p, width = width, height = height, bg = "white", device = pdf_dev)
   message("  figura: ", file.path(FIG_DIR, paste0(name, ".png")))
+}
+
+titles <- function(title = NULL, subtitle = NULL) {
+  if (SHOW_TITLES) labs(title = title, subtitle = subtitle) else labs(title = NULL, subtitle = NULL)
 }
 
 flab <- function(f) unname(ifelse(f %in% names(FILTER_LABEL), FILTER_LABEL[f], f))
@@ -219,8 +247,7 @@ plot_cd <- function(m, title) {
                           linewidth = 0.9, lineend = "round")
   p + scale_x_continuous(limits = c(-3.2, k + 4.2)) +
     scale_y_continuous(limits = c(min(lab_y) - 0.4, 1.15)) +
-    labs(title = title, subtitle = sprintf("N = %d series, k = %d metodos; barras ligam metodos sem diferenca (Nemenyi, alfa = %.2f)",
-                                           n, k, ALPHA)) +
+    labs(title = title, subtitle = if (SHOW_TITLES) sprintf(TXT$cd_sub, n, k, ALPHA) else NULL) +
     theme_void(base_size = 9) +
     theme(plot.title = element_text(face = "bold", colour = COL$ink, size = 10),
           plot.subtitle = element_text(colour = COL$ink2, size = 7.5, margin = margin(b = 2)),
@@ -281,12 +308,12 @@ fig_heatmap <- function(dt) {
     scale_fill_gradient2(low = COL$neg, mid = COL$mid, high = COL$pos, midpoint = 0,
                          limits = c(-lim, lim), oob = scales::squish,
                          breaks = c(-lim, -lim / 2, 0, lim / 2, lim),
-                         labels = function(x) ifelse(abs(x) == lim, paste0(ifelse(x > 0, ">= +", "<= "), x, "%"),
+                         labels = function(x) ifelse(abs(x) == lim, paste0(ifelse(x > 0, "\u2265 +", "\u2264 "), x, "%"),
                                                      paste0(ifelse(x > 0, "+", ""), x, "%")),
                          name = TXT$delta_short,
                          guide = guide_colourbar(title.position = "top", title.hjust = 0.5)) +
     facet_grid(Model ~ Scenario, scales = "free_x", space = "free_x", switch = "x") +
-    labs(title = TXT$delta, x = NULL, y = NULL, caption = TXT$heat_caption) +
+    titles(TXT$delta) + labs(x = NULL, y = NULL, caption = TXT$heat_caption) +
     theme_article() +
     theme(panel.grid = element_blank(), panel.grid.major = element_blank(), axis.text.x = element_text(size = 7.5),
           strip.placement = "outside", panel.spacing.x = unit(0.35, "lines"),
@@ -382,33 +409,38 @@ fig_pareto <- function(res, dt) {
   d$Model <- factor(d$Model, levels = intersect(MODELS, d$Model))
   d$Label <- flab(d$Filter)
   hs <- paste(sort(unique(cb$Horizon)), collapse = ", ")
-  one <- function(ycol, ylab, ref, file, title) {
+  one <- function(ycol, ylab, ref, file, cap = Inf) {
     d$Y <- d[[ycol]]
     ref$Model <- factor(ref$Model, levels = levels(d$Model))
     d <- d[is.finite(d$Y), ]
     d$front <- FALSE
     for (mm in levels(d$Model)) { ii <- d$Model == mm; d$front[ii] <- pareto_front(d$Overhead_ms[ii], d$Y[ii]) }
+    # Valores extremos (ex.: LOWESS +800%) achatariam o resto: corta o eixo e mostra o valor real no rotulo.
+    d$clipped <- d$Y > cap
+    d$Yp <- pmin(d$Y, cap)
+    d$Label <- ifelse(d$clipped, sprintf("%s (%+.0f%%)", d$Label, d$Y), d$Label)
     fr <- d[d$front, ]; fr <- fr[order(fr$Model, fr$Overhead_ms), ]
-    p <- ggplot(d, aes(Overhead_ms, Y)) +
+    p <- ggplot(d, aes(Overhead_ms, Yp)) +
       geom_hline(data = ref, aes(yintercept = Y), linetype = "dashed", colour = COL$ink2, linewidth = 0.4) +
       geom_step(data = fr, aes(group = Model), direction = "hv", colour = COL$ink, linewidth = 0.5, alpha = 0.6) +
-      geom_point(aes(fill = Update, shape = Update), size = 2.8, colour = "white", stroke = 0.6) +
+      geom_point(aes(fill = Update, shape = Update), size = 2.6, colour = "white", stroke = 0.6) +
       geom_text_repel(aes(label = Label, fontface = ifelse(front, "bold", "plain")), size = 2.5,
-                      colour = COL$ink, min.segment.length = 0.2, segment.colour = COL$ink2,
-                      segment.size = 0.25, max.overlaps = 30, seed = 1) +
-      scale_x_log10(labels = function(x) format(x, big.mark = ".", decimal.mark = ",", scientific = FALSE, drop0trailing = TRUE)) +
+                      colour = COL$ink, min.segment.length = 0, segment.colour = COL$ink2,
+                      segment.size = 0.25, box.padding = 0.45, point.padding = 0.25, force = 3,
+                      force_pull = 0.5, max.overlaps = Inf, max.iter = 20000, seed = 1) +
+      scale_x_log10(labels = function(x) format(x, big.mark = ",", scientific = FALSE, drop0trailing = TRUE, trim = TRUE),
+                    expand = expansion(mult = 0.08)) +
+      scale_y_continuous(expand = expansion(mult = 0.12)) +
       scale_fill_manual(values = c("O(1)" = COL$o1, "Batch" = COL$batch), name = TXT$incremental, drop = FALSE) +
       scale_shape_manual(values = c("O(1)" = 21, "Batch" = 24), name = TXT$incremental, drop = FALSE) +
-      facet_wrap(~ Model, nrow = 1) +
-      labs(title = title, subtitle = sprintf("Cenario %s, media sobre h = %s. Tracejado = baseline (sem filtro).\nLinha preta: %s (menor custo e menor valor).",
-                                             scen_lab(PARETO_SCENARIO), hs, TXT$frontier),
-           x = TXT$overhead, y = ylab) +
+      facet_wrap(~ Model, ncol = 1, scales = "free_y") +
+      titles(TXT$pareto_title, sprintf(TXT$pareto_sub, scen_lab(PARETO_SCENARIO), hs, TXT$frontier)) +
+      labs(x = TXT$overhead, y = ylab, caption = if (any(d$clipped)) sprintf(TXT$pareto_cap, cap) else NULL) +
       theme_article()
-    save_fig(p, file, max(5, 3.2 * nlevels(d$Model) + 0.8), 4.6)
+    save_fig(p, file, 7.2, 1.3 + 3.4 * nlevels(d$Model))
   }
-  one("Rank", TXT$rank, setNames(base_rank, c("Model", "Y")), "3_pareto_rank", "Acuracia vs. custo computacional")
-  one("Delta", TXT$delta_short, data.frame(Model = levels(d$Model), Y = 0), "3_pareto_delta_rmse",
-      "Acuracia vs. custo computacional")
+  one("Rank", TXT$rank, setNames(base_rank, c("Model", "Y")), "3_pareto_rank")
+  one("Delta", TXT$delta_short, data.frame(Model = levels(d$Model), Y = 0), "3_pareto_delta_rmse", cap = PARETO_DELTA_CAP)
 }
 
 # -------------------- 4. Painel diagnostico de degradacao --------------------
@@ -427,19 +459,23 @@ error_ratio_table <- function(err, model) {
   out$Horizon <- h; out
 }
 
+# Serie usada nas figuras 0 e 4b: a indicada ou a primeira com ciclo de 24 h detectado.
+pick_series <- function(sl, wanted = DIAG_SERIES) {
+  if (!is.null(wanted) && wanted %in% names(sl)) return(wanted)
+  n_test <- N_WINDOWS * PRED_HORIZON
+  for (id in names(sl)) {
+    cl <- as.numeric(sl[[id]]); cl <- cl[seq_len(length(cl) - n_test)]
+    if (forecast::findfrequency(cl) == 24) return(id)
+  }
+  names(sl)[1]
+}
+
 overlay_data <- function(res, model) {
   if (!load_ic_common()) return(NULL)
   sl <- load_m4_hourly(N_SERIES)
   n_test <- N_WINDOWS * PRED_HORIZON
   sc <- noise_scenarios[[DIAG_SCENARIO_OVERLAY]]
-  ids <- if (is.null(DIAG_SERIES)) names(sl) else DIAG_SERIES
-  pick <- NULL
-  for (id in ids) {
-    cl <- as.numeric(sl[[id]]); cl <- cl[seq_len(length(cl) - n_test)]
-    if (is.null(DIAG_SERIES) && forecast::findfrequency(cl) != 24) next
-    pick <- id; break
-  }
-  if (is.null(pick)) pick <- names(sl)[1]
+  pick <- pick_series(sl)
   i <- match(pick, names(sl)); cl <- as.numeric(sl[[i]])
   co <- corrupt_sensor_signal(cl, sc$noise_lvl, sc$outlier_ratio, sc$spike_mag, BASE_SEED + i)
   n <- length(cl) - n_test; x <- co[seq_len(n)]; y <- cl[seq_len(n)]
@@ -481,9 +517,8 @@ fig_diagnostic <- function(res, err) {
         scale_y_log10() + scale_x_continuous(breaks = seq_len(max(er$Step))) +
         scale_colour_manual(values = pal, name = NULL) +
         facet_wrap(~ Scenario, nrow = 1) +
-        labs(title = sprintf("(a) %s: Error Ratio por passo (h = %d)", model, er$Horizon[1]),
-             subtitle = "Mediana entre series do RMSE do filtro / RMSE do baseline em cada passo; > 1 = pior que o baseline (escala log).",
-             x = TXT$step, y = TXT$ratio) +
+        (if (SHOW_TITLES) labs(title = sprintf(TXT$er_title, model, er$Horizon[1]), subtitle = TXT$er_sub) else labs(title = "(a)")) +
+        labs(             x = TXT$step, y = TXT$ratio) +
         theme_article()
     } else {
       message("  ", model, ": sem erros por passo (aba Erros_Teste); painel (a) pulado")
@@ -491,8 +526,8 @@ fig_diagnostic <- function(res, err) {
     ov <- overlay_data(res, model)
     pb <- NULL
     if (!is.null(ov) && nrow(ov)) {
-      ov$F <- factor(sprintf("%s (%s)\nciclo 24 h retido: %.0f%%", flab(ov$Filter), ov$Param, ov$Amp),
-                     levels = unique(sprintf("%s (%s)\nciclo 24 h retido: %.0f%%", flab(ov$Filter), ov$Param, ov$Amp)[order(match(ov$Filter, fs))]))
+      strip <- sprintf(TXT$ov_strip, flab(ov$Filter), ov$Param, ov$Amp)
+      ov$F <- factor(strip, levels = unique(strip[order(match(ov$Filter, fs))]))
       ov$col <- pal[flab(ov$Filter)]
       ref <- rbind(data.frame(Hour = ov$Hour, F = ov$F, Y = ov$Corrupted, Ref = TXT$corrupted),
                    data.frame(Hour = ov$Hour, F = ov$F, Y = ov$Clean, Ref = TXT$clean))
@@ -504,9 +539,9 @@ fig_diagnostic <- function(res, err) {
         ggnewscale_free_filtered(ov) +
         scale_x_continuous(breaks = c(1, 12, 24, 36, 48)) +
         facet_wrap(~ F, nrow = 1) +
-        labs(title = sprintf("(b) Ultimas 48 h: serie %s, cenario %s", ov$Series_ID[1], scen_lab(DIAG_SCENARIO_OVERLAY)),
-             subtitle = "Linha colorida = filtrada. 'Ciclo 24 h retido' = amplitude da senoide de 24 h na serie filtrada / na serie limpa.",
-             x = TXT$hours, y = TXT$value) +
+        (if (SHOW_TITLES) labs(title = sprintf(TXT$ov_title, ov$Series_ID[1], scen_lab(DIAG_SCENARIO_OVERLAY)),
+                               subtitle = TXT$ov_sub) else labs(title = "(b)")) +
+        labs(             x = TXT$hours, y = TXT$value) +
         theme_article() + theme(strip.text = element_text(size = 7.5))
     } else {
       message("  painel (b) pulado (precisa do IC_Common.R e dos ts_fil_*.R nesta pasta)")
@@ -546,13 +581,106 @@ fig_dm <- function(res) {
                         breaks = c(TXT$dm_better, TXT$dm_equal, TXT$dm_worse)) +
       scale_x_continuous(labels = scales::percent, breaks = c(0.25, 0.5, 0.75), expand = c(0, 0)) +
       facet_grid(Model ~ Scenario) +
-      labs(title = sprintf("Teste Diebold-Mariano serie a serie (h = %d)", h),
-           subtitle = sprintf("Proporcao das %d series em cada classe; filtros ordenados pela proporcao media de melhora.",
-                              max(tab$N)),
-           x = TXT$dm_share, y = NULL, caption = TXT$dm_caption) +
+      titles(sprintf(TXT$dm_title, h), sprintf(TXT$dm_sub, max(tab$N))) +
+      labs(           x = TXT$dm_share, y = NULL, caption = TXT$dm_caption) +
       theme_article() + theme(panel.grid.major.y = element_blank(), panel.spacing.x = unit(0.8, "lines"))
     save_fig(p, sprintf("5_dm_series_h%02d", h), 9, 1.4 + 2.9 * nlevels(tab$Model))
   }
+}
+
+# ------------------------ 0. Perfil de contaminacao --------------------------
+fig_contamination <- function() {
+  message("0. Perfil de contaminacao")
+  if (!load_ic_common()) { message("  figura 0 pulada (precisa do IC_Common.R)"); return(invisible()) }
+  sl <- load_m4_hourly(N_SERIES)
+  id <- pick_series(sl, if (is.null(CONTAM_SERIES)) DIAG_SERIES else CONTAM_SERIES)
+  i <- match(id, names(sl)); cl <- as.numeric(sl[[i]]); n <- length(cl)
+  keep <- max(1L, n - CONTAM_LAST_N + 1L):n
+  rows <- lapply(SCENARIO_ORDER, function(sn) {
+    sc <- noise_scenarios[[sn]]
+    # mesma semente em todos os cenarios (common random numbers), contaminacao na serie inteira
+    co <- corrupt_sensor_signal(cl, sc$noise_lvl, sc$outlier_ratio, sc$spike_mag, BASE_SEED + i)
+    rbind(data.frame(Scenario = sn, Obs = keep, Value = co[keep], Kind = TXT$corrupted),
+          data.frame(Scenario = sn, Obs = keep, Value = cl[keep], Kind = TXT$clean))
+  })
+  d <- do.call(rbind, rows)
+  d$Scenario <- factor(scen_lab(d$Scenario), levels = scen_lab(SCENARIO_ORDER))
+  d$Kind <- factor(d$Kind, levels = c(TXT$corrupted, TXT$clean))
+  p <- ggplot(d, aes(Obs, Value, colour = Kind, linewidth = Kind)) +
+    geom_line() +
+    scale_colour_manual(values = setNames(c(COL$o1, COL$ink), c(TXT$corrupted, TXT$clean)), name = NULL) +
+    scale_linewidth_manual(values = setNames(c(0.35, 0.45), c(TXT$corrupted, TXT$clean)), name = NULL) +
+    facet_wrap(~ Scenario, ncol = 1) +
+    titles(sprintf(TXT$contam_title, id), sprintf(TXT$contam_sub, length(keep))) +
+    labs(x = TXT$contam_x, y = TXT$contam_y) +
+    theme_article()
+  save_fig(p, "0_contamination_profile", 7.2, 7.5)
+}
+
+# ------------------- Tabelas LaTeX de ranking de Friedman --------------------
+# Uma tabela por modelo: linhas = filtros, colunas = cenario x horizonte, valor = rank
+# medio. Negrito = filtro significativamente melhor que o baseline (TABLE_SIG).
+# Usa \usepackage{booktabs} e \usepackage{rotating} (sidewaystable) no preambulo.
+write_rank_tables <- function(res, dt) {
+  message("Tabelas LaTeX de ranking")
+  dir.create(TAB_DIR, showWarnings = FALSE, recursive = TRUE)
+  cb <- combos(res); out_all <- list()
+  for (model in intersect(MODELS, unique(cb$Model))) {
+    cm <- cb[cb$Model == model, ]
+    cm <- cm[order(match(cm$Scenario, SCENARIO_ORDER), cm$Horizon), ]
+    cols <- list(); ns <- integer(0)
+    for (i in seq_len(nrow(cm))) {
+      m <- rmse_matrix(res, model, cm$Horizon[i], cm$Scenario[i])
+      if (is.null(m) || nrow(m) < 2L) next
+      r <- colMeans(t(apply(m, 1, rank, ties.method = "average")))
+      k <- ncol(m); n <- nrow(m); cd <- nemenyi_cd(k, n)
+      sig <- setNames(rep(FALSE, length(r)), names(r))
+      if (TABLE_SIG == "nemenyi") {
+        sig <- r < r[["non_filter"]] - cd
+      } else {
+        w <- dt[dt$Model == model & dt$Horizon == cm$Horizon[i] & dt$Scenario == cm$Scenario[i], ]
+        ok <- w$Filter[is.finite(w$P_Holm) & w$P_Holm <= ALPHA & w$Delta < 0]
+        sig[intersect(names(sig), ok)] <- TRUE
+      }
+      key <- paste(cm$Scenario[i], cm$Horizon[i])
+      cols[[key]] <- list(scen = cm$Scenario[i], h = cm$Horizon[i], rank = r, sig = sig)
+      ns <- c(ns, n)
+    }
+    if (!length(cols)) next
+    fs <- intersect(FILTER_ORDER, unique(unlist(lapply(cols, function(c) names(c$rank)))))
+    scen <- vapply(cols, `[[`, "", "scen"); hs <- vapply(cols, `[[`, 0, "h")
+    groups <- rle(scen)
+    starts <- cumsum(c(2L, head(groups$lengths, -1L)))
+    head1 <- paste(c("", sprintf("\\multicolumn{%d}{c}{%s}", groups$lengths, gsub("_", " ", groups$values))), collapse = " & ")
+    rules <- paste(sprintf("\\cmidrule(lr){%d-%d}", starts, starts + groups$lengths - 1L), collapse = " ")
+    head2 <- paste(c("Filter", sprintf("$h=%d$", hs)), collapse = " & ")
+    body <- vapply(fs, function(f) {
+      cells <- vapply(cols, function(c) {
+        v <- c$rank[f]
+        if (!is.finite(v)) return("--")
+        txt <- sprintf("%.2f", v)
+        if (isTRUE(c$sig[f])) sprintf("\\textbf{%s}", txt) else txt
+      }, "")
+      lab <- flab(f)
+      paste(c(lab, cells), collapse = " & ")
+    }, "")
+    crit <- if (TABLE_SIG == "nemenyi") "its mean rank is lower than the baseline's by more than the Nemenyi critical difference" else
+      sprintf("it outperforms the baseline (median $\\Delta$RMSE$<0$, paired Wilcoxon signed-rank test, Holm-adjusted $p \\le %.2f$)", ALPHA)
+    caption <- sprintf("Mean Friedman ranks of the 16 methods for %s (lower is better; $N=%d$ series per column). Bold entries mark filters for which %s.",
+                       model, min(ns), crit)
+    tex <- c("% Gerado por gera_graficos.R - requer \\usepackage{booktabs} e \\usepackage{rotating}",
+             "\\begin{sidewaystable}", "\\centering", "\\scriptsize", "\\setlength{\\tabcolsep}{3.5pt}",
+             sprintf("\\caption{%s}", caption), sprintf("\\label{tab:ranks_%s}", tolower(model)),
+             sprintf("\\begin{tabular}{l%s}", paste(rep("r", length(cols)), collapse = "")),
+             "\\toprule", paste0(head1, " \\\\"), rules, paste0(head2, " \\\\"), "\\midrule",
+             paste0(body, " \\\\"), "\\bottomrule", "\\end{tabular}", "\\end{sidewaystable}")
+    f <- file.path(TAB_DIR, sprintf("tab_ranks_%s.tex", model))
+    writeLines(tex, f, useBytes = TRUE)
+    message("  tabela: ", f)
+    out_all[[model]] <- do.call(rbind, lapply(cols, function(c) data.frame(Model = model, Scenario = c$scen, Horizon = c$h,
+                                Filter = names(c$rank), Mean_Rank = unname(c$rank), Bold = unname(c$sig[names(c$rank)]))))
+  }
+  if (length(out_all)) utils::write.csv(do.call(rbind, out_all), file.path(TAB_DIR, "ranks_friedman.csv"), row.names = FALSE)
 }
 
 # ---------------------------------- Main -------------------------------------
@@ -563,11 +691,13 @@ main <- function() {
   dt <- delta_table(res)
   dir.create(FIG_DIR, showWarnings = FALSE, recursive = TRUE)
   utils::write.csv(dt, file.path(FIG_DIR, "tabela_delta_rmse_wilcoxon.csv"), row.names = FALSE)
+  fig_contamination()
   fig_cd(res)
   fig_heatmap(dt)
   fig_pareto(res, dt)
   fig_diagnostic(res, err)
   fig_dm(res)
+  write_rank_tables(res, dt)
   message("Pronto. Figuras em ", normalizePath(FIG_DIR))
 }
 
