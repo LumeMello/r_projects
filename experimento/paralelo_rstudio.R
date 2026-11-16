@@ -64,10 +64,25 @@ status <- function(modelo, h, variantes = "base") {
   tag <- .tag(modelo, h, variantes)
   janelas <- if (nzchar(Sys.getenv("IC_TESTE_RAPIDO"))) 2L else 10L   # N_WINDOWS do IC_Common.R
   ck <- file.path("checkpoints", sprintf("%s_%dpts", .prefixo(modelo, variantes), janelas * as.integer(h)))
-  feitos <- length(list.files(ck, pattern = "__[0-9]{2}_.*[.]rds$"))
+  arq <- list.files(ck, pattern = "__[0-9]{2}_.*[.]rds$", full.names = TRUE)
+  feitos <- length(arq)
   total <- .esperado(variantes)
   cat(sprintf("%s: %d de %d combinacoes (%.1f%%)\n", tag, feitos, total, 100 * feitos / total))
-  logs <- sort(list.files("logs", pattern = paste0("^", tag, "_parte[0-9]+[.]log$"), full.names = TRUE))
+  # Ritmo medido pelas combinacoes concluidas na ultima hora (vale tambem apos retomar).
+  if (feitos > 0L && feitos < total) {
+    mt <- file.mtime(arq); agora <- Sys.time()
+    janela <- min(60, as.numeric(difftime(agora, min(mt), units = "mins")))
+    recentes <- sum(mt > agora - janela * 60)
+    if (janela >= 2 && recentes > 0) {
+      ritmo <- recentes / janela                      # combinacoes por minuto
+      falta <- (total - feitos) / ritmo
+      cat(sprintf("  ritmo: %.1f combinacoes/min | previsao de termino: %s (daqui a ~%s)\n", ritmo,
+                  format(agora + falta * 60, "%d/%m %H:%M"),
+                  if (falta >= 90) sprintf("%.1f h", falta / 60) else sprintf("%.0f min", falta)))
+    }
+  }
+  logs <- list.files("logs", pattern = paste0("^", tag, "_parte[0-9]+[.]log$"), full.names = TRUE)
+  logs <- logs[order(as.integer(sub(".*_parte([0-9]+)[.]log$", "\\1", logs)))]
   for (f in logs) {
     l <- tail(readLines(f, warn = FALSE), 1)
     cat(sprintf("  %s: %s\n", sub(".*_(parte[0-9]+)[.]log$", "\\1", f), if (length(l)) substr(l, 1, 90) else "(sem saida ainda)"))
