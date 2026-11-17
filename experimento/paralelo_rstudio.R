@@ -29,8 +29,25 @@ n_padrao <- function() max(1L, parallel::detectCores(logical = FALSE) - 1L)
   out[!grepl("pgrep", out)]
 }
 
+# Mesmas regras do roda_experimento.R, checadas ANTES de lancar (devolve "" se ok).
+.valida <- function(modelo, h, variantes) {
+  modelos <- c("ARIMA", "ARIMA_FOURIER", "SARIMA", "MLP", "ELM")
+  v <- setdiff(toupper(strsplit(variantes, "+", fixed = TRUE)[[1]]), "BASE")
+  validas <- c("S24", "S24W", "CT", "FACT", "REP3", "REP5", "N100", "N200", "N414")
+  if (toupper(modelo) == "LSTM") return("LSTM esta desativado no roda_experimento.R")
+  if (!modelo %in% modelos) return(paste0("modelo desconhecido (use ", paste(modelos, collapse = ", "), ")"))
+  if (is.na(suppressWarnings(as.integer(h))) || as.integer(h) < 1L) return("horizonte invalido")
+  if (length(setdiff(v, validas))) return(paste("variante desconhecida:", paste(setdiff(v, validas), collapse = ", ")))
+  if (!modelo %in% c("MLP", "ELM") && any(v %in% c("S24", "S24W", "CT")))
+    return("S24, S24W e CT so valem para MLP e ELM (para os modelos ARIMA use so FACT, REPx ou Nx)")
+  if (all(c("S24", "S24W") %in% v)) return("use S24 ou S24W, nao os dois")
+  ""
+}
+
 lancar <- function(modelo, h, variantes = "base", n = n_padrao()) {
   stopifnot(file.exists("roda_experimento.R"), file.exists("roda_paralelo.sh"))
+  erro <- .valida(modelo, h, variantes)
+  if (nzchar(erro)) { message("Nao lancado (", modelo, " ", h, " ", variantes, "): ", erro); return(invisible(FALSE)) }
   tag <- .tag(modelo, h, variantes)
   ja <- .rodando(sprintf("roda_paralelo.sh %s %s %s ", modelo, h, variantes))
   if (length(ja)) { message("Ja esta rodando: ", tag, ". Use status() ou parar()."); return(invisible(FALSE)) }
@@ -84,8 +101,10 @@ status <- function(modelo, h, variantes = "base") {
   logs <- list.files("logs", pattern = paste0("^", tag, "_parte[0-9]+[.]log$"), full.names = TRUE)
   logs <- logs[order(as.integer(sub(".*_parte([0-9]+)[.]log$", "\\1", logs)))]
   for (f in logs) {
-    l <- tail(readLines(f, warn = FALSE), 1)
-    cat(sprintf("  %s: %s\n", sub(".*_(parte[0-9]+)[.]log$", "\\1", f), if (length(l)) substr(l, 1, 90) else "(sem saida ainda)"))
+    txt <- readLines(f, warn = FALSE)
+    err <- grep("^Error|^Erro", txt, value = TRUE)
+    l <- if (length(err)) paste("ERRO:", tail(err, 1)) else tail(txt, 1)
+    cat(sprintf("  %s: %s\n", sub(".*_(parte[0-9]+)[.]log$", "\\1", f), if (length(l)) substr(l, 1, 120) else "(sem saida ainda)"))
   }
   jl <- file.path("logs", paste0(tag, "_junta.log"))
   if (file.exists(jl)) cat("  junta:", tail(readLines(jl, warn = FALSE), 1), "\n")
@@ -119,16 +138,23 @@ lancar_fila <- function(fila, n = n_padrao()) {
   if (length(.rodando("roda_fila.sh"))) { message("Ja existe uma fila rodando. Use status_fila() ou parar()."); return(invisible(FALSE)) }
   dir.create("logs", showWarnings = FALSE)
   linhas <- c("#!/usr/bin/env bash", "set -u")
+  ok <- 0L
   for (x in fila) {
     if (length(x) == 2L) x <- c(x, "base")
+    erro <- .valida(x[1], x[2], x[3])
+    if (nzchar(erro)) { message("Pulado: ", paste(x, collapse = " "), " -> ", erro); next }
+    ok <- ok + 1L
+    # rc logo apos a rodada: dentro do echo, $? seria o codigo do date
     linhas <- c(linhas, sprintf("echo \"$(date '+%%F %%T') INICIO %s %s %s\"", x[1], x[2], x[3]),
-                sprintf("bash roda_paralelo.sh %s %s %s %d", shQuote(x[1]), shQuote(x[2]), shQuote(x[3]), as.integer(n)),
-                sprintf("echo \"$(date '+%%F %%T') FIM %s %s %s (codigo $?)\"", x[1], x[2], x[3]))
+                sprintf("bash roda_paralelo.sh %s %s %s %d; rc=$?", shQuote(x[1]), shQuote(x[2]), shQuote(x[3]), as.integer(n)),
+                sprintf("echo \"$(date '+%%F %%T') FIM %s %s %s ($( [ $rc -eq 0 ] && echo OK || echo \"FALHOU, codigo $rc: veja logs/\"))\"",
+                        x[1], x[2], x[3]))
   }
+  if (!ok) { message("Nenhum experimento valido na fila; nada foi lancado."); return(invisible(FALSE)) }
   linhas <- c(linhas, "echo \"$(date '+%F %T') FILA CONCLUIDA\"")
   writeLines(linhas, "roda_fila.sh")
   system(paste(.desliga(), "bash roda_fila.sh > logs/fila.log 2>&1 < /dev/null"), wait = FALSE)
-  message(sprintf("Fila com %d experimentos lancada em %d processos cada. Acompanhe com status_fila().", length(fila), n))
+  message(sprintf("Fila com %d experimentos lancada em %d processos cada. Acompanhe com status_fila().", ok, n))
   invisible(TRUE)
 }
 
