@@ -99,8 +99,12 @@ if (!is.na(PARTE) && tolower(PARTE) == "junta") {
 } else if (!is.na(PARTE)) {
   kn <- as.integer(strsplit(PARTE, "/", fixed = TRUE)[[1]])
   if (length(kn) != 2L || any(is.na(kn)) || kn[1] < 1L || kn[1] > kn[2]) stop("PARTE deve ser 'k/n', ex.: 2/4")
-  idx <- split(seq_len(N_SERIES), cut(seq_len(N_SERIES), kn[2], labels = FALSE))[[kn[1]]]
-  message(sprintf("Parte %d de %d: series %d a %d", kn[1], kn[2], min(idx), max(idx)))
+  # Series alternadas entre as partes (k, k+n, k+2n, ...): ao ampliar N_SERIES, as ja
+  # calculadas (no checkpoint) ficam espalhadas e nenhum processo termina cedo e fica ocioso.
+  # Mudar a divisao e seguro: o checkpoint e por serie, nao por parte.
+  idx <- seq(kn[1], N_SERIES, by = kn[2])
+  message(sprintf("Parte %d de %d: %d series (%s)", kn[1], kn[2], length(idx),
+                  paste(head(idx, 6), collapse = ", ")), if (length(idx) > 6) ", ..." else "")
   run_experiment(MODELO, grid, prefixo, series_idx = idx, collect = FALSE)
   message("Parte concluida. Quando todas terminarem: Rscript roda_experimento.R ", MODELO, " ", H, " ",
           VARIANTES, " junta")
